@@ -1,0 +1,296 @@
+-- =============================================================================
+-- Full indicator sheet seed (all KPIs + DEs + components)
+-- Generated from client indicator master
+-- =============================================================================
+
+-- Data elements
+INSERT INTO data_element (code, name, source_id, collection_level, variable, filter_text, period_type, unit)
+SELECT v.code, v.name, s.id, v.collection_level, v.variable, v.filter_text, v.period_type, 'count'
+FROM (VALUES
+  ('DE_V65_CSECTION', 'Total number of C-Section deliveries performed (3.1)', 'hmis', 'facility', 'v65', 'CHC', 'monthly'),
+  ('DE_UPKSK_FRU_D', 'Facility Specialized Unit: FRU-D (designated CHC-FRU)', 'uprsk', 'facility', NULL, 'CHC', 'monthly'),
+  ('E4', 'New Pregnant Women registered for ANC within 1st trimester', 'ekavach', 'block', NULL, NULL, 'monthly'),
+  ('E5', 'New Pregnant Women registered for ANC', 'ekavach', 'block', NULL, NULL, 'monthly'),
+  ('E6', '1a1: Number of PW received 4 or more ANC check ups', 'ekavach', 'block', NULL, NULL, 'monthly'),
+  ('E7', 'New Pregnant Women registered for ANC (legacy / other use)', 'ekavach', 'block', NULL, NULL, 'monthly'),
+  ('E_ELA_PW', '1a2/1b2: Estimated number of pregnant women for period (ELA, annual)', 'dgfw', 'block', NULL, NULL, 'fy'),
+  ('E_HB4_TEST', '1b1: Number of PW tested for Haemoglobin (Hb) 4 or more times', 'ekavach', 'block', NULL, NULL, 'monthly'),
+  ('E8', 'Institutional deliveries including C-section (Public - Mantra)', 'mantra', 'facility', NULL, 'Public', 'monthly'),
+  ('E9', 'Institutional deliveries including C-section (Private - HMIS 2.2 / v54)', 'hmis', 'facility', 'v54', 'Private', 'monthly'),
+  ('E10', 'Estimated delivery (DGFW)', 'dgfw', 'block', NULL, NULL, 'monthly'),
+  ('DE_MANTRA_STAY48_FAC', 'Facilities where avg stay >= 48 hrs for normal delivery', 'mantra', 'facility', NULL, NULL, 'monthly'),
+  ('DE_MANTRA_NORMAL_DEL_FAC', 'Facilities that conducted normal delivery during the month', 'mantra', 'facility', NULL, NULL, 'monthly'),
+  ('DE_V16_HTN_DETECTED', 'New cases of PW with hypertension detected (1.3.1)', 'hmis', 'facility', 'v16', NULL, 'monthly'),
+  ('DE_V24_HB_LE7', 'PW having Hb level<=7 g/dl (1.4.4)', 'hmis', 'facility', 'v24', NULL, 'monthly'),
+  ('DE_V27_GDM_POS', 'PW tested positive for GDM (1.5.2)', 'hmis', 'facility', 'v27', NULL, 'monthly'),
+  ('DE_V35_THYROID_POS', 'PW tested positive for Thyroid disorder (1.7.1)', 'hmis', 'facility', 'v35', NULL, 'monthly'),
+  ('DE_V17_HTN_MANAGED', 'PW with hypertension managed at institution (1.3.2)', 'hmis', 'facility', 'v17', NULL, 'monthly'),
+  ('DE_V25_ANAEMIA_TREATED', 'PW treated for severe anaemia Hb<=7 (1.4.5)', 'hmis', 'facility', 'v25', NULL, 'monthly'),
+  ('DE_V28_GDM_MANAGED', 'GDM positive PW managed with Insulin/Metformin (1.5.3)', 'hmis', 'facility', 'v28', NULL, 'monthly'),
+  ('DE_V36_THYROID_TREATED', 'PW treated for thyroid disorder (1.7.2)', 'hmis', 'facility', 'v36', NULL, 'monthly'),
+  ('E22', 'U/VHND sessions conducted in the last month', 'ekavach', 'block', NULL, NULL, 'monthly'),
+  ('E23', 'Estimated population (DGFW) for VHND planned base', 'dgfw', 'block', NULL, NULL, 'fy'),
+  ('E24', 'Births registered (CRS)', 'crs', 'district', NULL, NULL, 'cumulative'),
+  ('E25', 'Estimated live births (DGFW)', 'dgfw', 'block', NULL, NULL, 'fy'),
+  ('E26', 'ANMs who logged into eKavach in last 30 days', 'ekavach', 'district', NULL, NULL, 'rolling_30d'),
+  ('E27', 'Total number of active ANMs on eKavach', 'ekavach', 'district', NULL, NULL, 'rolling_30d'),
+  ('DE_V71_FRESH_SB', 'Fresh Stillbirth - Intrapartum (4.1.3.a)', 'hmis', 'facility', 'v71', NULL, 'monthly'),
+  ('DE_V72_MAC_SB', 'Macerated Stillbirth - Antepartum (4.1.3.b)', 'hmis', 'facility', 'v72', NULL, 'monthly'),
+  ('DE_V455_NB_DEATH_1W', 'Newborn deaths within 1 week at facility/transit (16.1.2.a)', 'hmis', 'facility', 'v455', NULL, 'monthly'),
+  ('DE_V68_LB_MALE', 'Live Birth - Male (4.1.1.a)', 'hmis', 'facility', 'v68', NULL, 'monthly'),
+  ('DE_V69_LB_FEMALE', 'Live Birth - Female (4.1.1.b)', 'hmis', 'facility', 'v69', NULL, 'monthly'),
+  ('E35', 'Total LBW children (Mantra)', 'mantra', 'facility', NULL, NULL, 'monthly'),
+  ('E36', 'Total live births (Mantra)', 'mantra', 'facility', NULL, NULL, 'monthly'),
+  ('E37', 'Total duration (days) of stay by newborns at NBSUs', 'fbnc', 'district', NULL, NULL, 'monthly'),
+  ('E38', '# of bed days at NBSUs', 'fbnc', 'district', NULL, NULL, 'monthly'),
+  ('E39', '# of newborns discharged from SNCU', 'fbnc', 'district', NULL, NULL, 'monthly'),
+  ('E40', '# of newborns admission in SNCUs excluding still admitted', 'fbnc', 'district', NULL, NULL, 'monthly'),
+  ('DE_V63_SICK_NB_REF', 'Sick newborns referred by ASHA under HBNC (2.5)', 'hmis', 'facility', 'v63', NULL, 'monthly'),
+  ('DE_V62_HBNC_VISITS', 'Newborns received 6/7 HBNC visits (2.4)', 'hmis', 'facility', 'v62', NULL, 'monthly'),
+  ('E43', 'Children fully immunized before 12 months', 'uwin', 'block', NULL, NULL, 'monthly'),
+  ('E44', 'Estimated infant (DGFW)', 'dgfw', 'block', NULL, NULL, 'fy'),
+  ('E45', 'Children received MR2 dose', 'uwin', 'block', NULL, NULL, 'monthly'),
+  ('E46', 'Estimated children aged 16 to 24 months (DGFW)', 'dgfw', 'block', NULL, NULL, 'fy'),
+  ('E47', 'Total incentives paid to ASHA (Urban) CCPM', 'ccpm', 'block', NULL, NULL, 'monthly'),
+  ('E48', 'Total incentives paid to ASHA (Rural) BCPM', 'bcpm', 'block', NULL, NULL, 'monthly'),
+  ('E49', 'Number of working ASHAs (Urban) CCPM', 'ccpm', 'block', NULL, NULL, 'monthly'),
+  ('E50', 'Number of working ASHAs (Rural) BCPM', 'bcpm', 'block', NULL, NULL, 'monthly'),
+  ('E51', 'AAM uploaded report for # of days in the month', 'aam', 'facility', NULL, NULL, 'monthly'),
+  ('E52', 'AAM conducted JAS meeting in the last month', 'aam', 'facility', NULL, NULL, 'monthly'),
+  ('E53', '# of wellness sessions conducted in last months', 'aam', 'facility', NULL, NULL, 'monthly'),
+  ('E54', '# of teleconsultations by AAM (e-sanjeevani)', 'esanjeevani', 'facility', NULL, NULL, 'monthly'),
+  ('E55', 'AAM indented drugs in a quarter (DVDMS)', 'dvdms', 'facility', NULL, NULL, 'monthly'),
+  ('E56', 'Designated AAM count', 'aam', 'facility', NULL, NULL, 'monthly'),
+  ('E57', 'Facilities/labs reported on UDSP all four weeks', 'udsp', 'facility', NULL, NULL, 'monthly'),
+  ('E58', 'Facilities/labs registered on UDSP portal', 'udsp', 'facility', NULL, NULL, 'monthly'),
+  ('E59', 'TB cases notified by public and private facilities', 'nikshay', 'block', NULL, NULL, 'monthly'),
+  ('E60', 'Total target of TB notification', 'nikshay', 'block', NULL, NULL, 'monthly'),
+  ('E61', 'DS-TB cases successfully treated (cohort)', 'nikshay', 'block', NULL, NULL, 'monthly'),
+  ('E62', 'DS-TB cases notified in last year', 'nikshay', 'block', NULL, NULL, 'monthly'),
+  ('E63', 'DR-TB cases successfully treated (cohort)', 'nikshay', 'block', NULL, NULL, 'monthly'),
+  ('E64', 'DR-TB cases notified 2 years back', 'nikshay', 'block', NULL, NULL, 'monthly'),
+  ('E65', 'Eligible population screened for hypertension (FY to date)', 'ekavach', 'block', NULL, NULL, 'cumulative'),
+  ('E66', 'Total population aged 30 years and above', 'ekavach', 'block', NULL, NULL, 'fy'),
+  ('E67', 'Eligible population screened for diabetes (FY to date)', 'ekavach', 'block', NULL, NULL, 'cumulative'),
+  ('E68', 'Total population aged 30+ (diabetes denom)', 'ekavach', 'block', NULL, NULL, 'fy'),
+  ('E69', 'Health facilities certified NQAS (excl state certified)', 'state_report', 'block', NULL, NULL, 'monthly'),
+  ('E70', 'Target public health facilities as per UPKSK', 'uprsk', 'facility', NULL, NULL, 'monthly'),
+  ('E89', 'Facilities meeting all UPKSK service norms', 'hmis', 'facility', NULL, NULL, 'monthly'),
+  ('E90', 'Total facilities (DH/CHC/PHC) as per UPKSK', 'uprsk', 'facility', NULL, NULL, 'monthly'),
+  ('E91', 'EDL drugs available at facility (last day of month)', 'dvdms', 'facility', NULL, NULL, 'monthly'),
+  ('E92', 'EDL drugs whose rate contracts available', 'dvdms', 'facility', NULL, NULL, 'monthly'),
+  ('E93_EDL_REQUIRED', 'Required EDLs per facility type (UPKSK)', 'uprsk', 'facility', NULL, NULL, 'monthly'),
+  ('E92_FAC_COUNT', '# of facilities as per UPKSK (EDL denom facilities)', 'uprsk', 'facility', NULL, NULL, 'monthly'),
+  ('E93', 'Budget utilized by district (FAMS cumulative)', 'fams', 'district', NULL, NULL, 'cumulative'),
+  ('E94', 'Limit assigned to district (FAMS)', 'fams', 'district', NULL, NULL, 'cumulative'),
+  ('E95', 'Families with at least one Ayushman Card', 'pmjay', 'district', NULL, NULL, 'monthly'),
+  ('E96', 'Targeted eligible families for Ayushman Card', 'pmjay', 'district', NULL, NULL, 'monthly'),
+  ('E97', 'Budget utilized by district (Koshwani cumulative)', 'koshwani', 'district', NULL, NULL, 'cumulative'),
+  ('E98', 'Limit assigned to district (Koshwani)', 'koshwani', 'district', NULL, NULL, 'cumulative'),
+  ('E99', 'ABHA seeded/linked/generated with eKavach ID (FY)', 'ekavach', 'block', NULL, NULL, 'cumulative'),
+  ('E100', 'Population enumerated in eKavach portal', 'ekavach', 'block', NULL, NULL, 'fy'),
+  ('E101', 'New registrations in e-kavach with ABHA in the month', 'ekavach', 'block', NULL, NULL, 'monthly'),
+  ('E102', 'New registrations in e-kavach during the month', 'ekavach', 'block', NULL, NULL, 'monthly'),
+  ('E103', 'Facilities where HIS used for OPD+Lab registration', 'his', 'district', NULL, NULL, 'monthly'),
+  ('E104', 'Facilities in district upto CHC (UPKSK)', 'uprsk', 'facility', NULL, NULL, 'monthly'),
+  ('E105', 'OPDs reported in HIS during the month', 'his', 'district', NULL, NULL, 'monthly'),
+  ('E106', 'OPDs reported in HMIS during the month (v278 Public)', 'hmis', 'facility', 'v278', 'Public', 'monthly'),
+  ('E107', 'OPDs in HIS having ABHA during the month', 'his', 'district', NULL, NULL, 'monthly'),
+  ('E108', 'OPDs reported in HIS during the month (ABHA denom)', 'his', 'district', NULL, NULL, 'monthly'),
+  ('E109', 'ABHA linked EHR in the month', 'his', 'district', NULL, NULL, 'monthly'),
+  ('E110', 'ABHA based OPDs reported in HIS during the month', 'his', 'district', NULL, NULL, 'monthly'),
+  ('E111', 'PMJAY empanelled facilities with ABDM enabled HIS OPD', 'his', 'district', NULL, NULL, 'monthly'),
+  ('E112', 'PMJAY empanelled facilities', 'pmjay', 'district', NULL, NULL, 'monthly')
+) AS v(code, name, source_code, collection_level, variable, filter_text, period_type)
+JOIN source_system s ON s.code = v.source_code
+ON CONFLICT (code) DO UPDATE SET
+  name = EXCLUDED.name,
+  source_id = EXCLUDED.source_id,
+  collection_level = EXCLUDED.collection_level,
+  variable = EXCLUDED.variable,
+  filter_text = EXCLUDED.filter_text,
+  period_type = EXCLUDED.period_type,
+  updated_at = NOW();
+
+-- Indicators
+INSERT INTO indicator (sno, code, name, domain, indicator_type, ranking_level, formula_text, unit, is_negative, period_type, primary_source_id, weight)
+SELECT v.sno, v.code, v.name, v.domain, v.indicator_type, v.ranking_level, v.formula_text, v.unit, v.is_negative, v.period_type, s.id, 1.0
+FROM (VALUES
+  (1, 'IND_CHC_FRU_CSECTION_PCT', '% of CHC-FRUs conducted >=10 C-section per month against designated CHC-FRUs', 'delivery_care', 'quality', 'district', 'CHC-FRUs with >=10 C-sections / designated CHC-FRUs * 100', 'percent', FALSE, 'monthly', 'hmis'),
+  (2, 'IND_ANC_1ST_TRIMESTER_PCT', '% of PW registered for ANC within the first trimester against total PW registered for ANC', 'ante_natal', 'coverage', 'both', 'E4 / E5 * 100', 'percent', FALSE, 'monthly', 'ekavach'),
+  (3, 'IND_ANC_4PLUS_PCT', 'PW received 4 or more ANC with Hb testing', 'ante_natal', 'coverage', 'both', '(((1a1 / (1a2 / 12)) + (1b1 / (1b2 / 12))) / 2) * 100', 'percent', FALSE, 'monthly', 'ekavach'),
+  (4, 'IND_INSTITUTIONAL_DELIVERY_PCT', 'Percentage of pregnant women delivered in institution against estimated delivery', 'delivery_care', 'coverage', 'both', '(E8 + E9) / E10 * 100', 'percent', FALSE, 'monthly', 'mantra'),
+  (5, 'IND_NORMAL_DEL_STAY48_PCT', '% of facilities where average duration of stay is more than 48 hours for normal delivery', 'delivery_care', 'quality', 'both', 'facilities_stay_ge_48 / facilities_with_normal_delivery * 100', 'percent', FALSE, 'monthly', 'mantra'),
+  (6, 'IND_HRP_MANAGED_PCT', '% of HRP managed against identified', 'ante_natal', 'quality', 'both', '(v17+v25+v28+v36) / (v16+v24+v27+v35) * 100', 'percent', FALSE, 'monthly', 'hmis'),
+  (7, 'IND_VHND_PCT', '% of U/VHND sessions conducted against planned in the last month', 'ante_natal', 'coverage', 'both', 'E22 / E23 * 100', 'percent', FALSE, 'monthly', 'ekavach'),
+  (8, 'IND_BIRTH_REG_PCT', '% of births registered against estimated live births (cumulative)', 'delivery_care', 'coverage', 'district', 'E24 / E25 * 100', 'percent', FALSE, 'cumulative', 'crs'),
+  (9, 'IND_ANM_LOGIN_PCT', '% of ANMs who logged into eKavach in the last 30 days, against total active ANMs', 'data_quality', 'data_quality', 'district', 'E26 / E27 * 100', 'percent', FALSE, 'rolling_30d', 'ekavach'),
+  (10, 'IND_PERINATAL_DEATH_PCT', '% of perinatal deaths before discharge against institutional birth (negative indicator)', 'delivery_care', 'quality', 'both', '(v71+v72+v455) / (v68+v69) * 100', 'percent', TRUE, 'monthly', 'hmis'),
+  (11, 'IND_LBW_PCT', 'Percentage of low-birth weight babies (less than 2500g) (negative indicator)', 'delivery_care', 'quality', 'district', 'E35 / E36 * 100', 'percent', TRUE, 'monthly', 'mantra'),
+  (12, 'IND_NBSU_BOR', 'Average bed occupancy rate (BoR) per NBSU per month', 'post_natal', 'quality', 'district', 'E37 / E38 * 100', 'percent', FALSE, 'monthly', 'fbnc'),
+  (13, 'IND_SNCU_DISCHARGE_PCT', '% of newborns discharged from SNCUs against admissions, excluding those still admitted', 'post_natal', 'quality', 'district', 'E39 / E40 * 100', 'percent', FALSE, 'monthly', 'fbnc'),
+  (14, 'IND_HBNC_SICK_REFERRAL_PCT', '% of new born identified sick during HBNC visit referred to the facility by ASHA against HBNC visit (6/7 visit)', 'post_natal', 'coverage', 'both', 'v63 / v62 * 100', 'percent', FALSE, 'monthly', 'hmis'),
+  (15, 'IND_FULL_IMMUNIZATION_PCT', '% of children full immunized against estimated infant', 'immunization', 'coverage', 'both', 'E43 / E44 * 100', 'percent', FALSE, 'monthly', 'uwin'),
+  (16, 'IND_MR2_PCT', '% of children received MR 2 dose against estimated children aged 16 to 24 months', 'immunization', 'coverage', 'both', 'E45 / E46 * 100', 'percent', FALSE, 'monthly', 'uwin'),
+  (17, 'IND_ASHA_AVG_INCENTIVE', 'Average incentives paid to ASHA on monthly basis', 'family_planning', 'coverage', 'both', '(E47+E48) / (E49+E50)', 'amount', FALSE, 'monthly', 'ccpm'),
+  (18, 'IND_FUNCTIONAL_AAM_PCT', '% of functional AAM against designated', 'data_quality', 'quality', 'both', 'Functional AAM (all 5 services) / designated AAM * 100', 'percent', FALSE, 'monthly', 'aam'),
+  (19, 'IND_UDSP_REPORTING_PCT', 'Percentage of health facilities reporting weekly on UDSP portal', 'data_quality', 'data_quality', 'both', 'E57 / E58 * 100', 'percent', FALSE, 'monthly', 'udsp'),
+  (20, 'IND_TB_NOTIFICATION_RATE', 'Total case notification rate of TB against target', 'communicable_diseases', 'coverage', 'both', 'E59 / E60 * 100', 'percent', FALSE, 'monthly', 'nikshay'),
+  (21, 'IND_TB_SUCCESS_PCT', '% of Tuberculosis (TB) cases treated successfully against TB cases notified one year ago', 'communicable_diseases', 'quality', 'both', 'E61 / E62 * 100', 'percent', FALSE, 'monthly', 'nikshay'),
+  (22, 'IND_DRTB_SUCCESS_PCT', 'Proportion of DRTB cases treated successfully against DR-TB cases notified two years ago', 'communicable_diseases', 'quality', 'both', 'E63 / E64 * 100', 'percent', FALSE, 'monthly', 'nikshay'),
+  (23, 'IND_HTN_SCREEN_30PLUS_PCT', '% of population aged 30+ screened for hypertension', 'communicable_diseases', 'coverage', 'both', 'E65 / E66 * 100', 'percent', FALSE, 'cumulative', 'ekavach'),
+  (24, 'IND_DIABETES_SCREEN_30PLUS_PCT', '% of population aged 30+ screened for diabetes', 'communicable_diseases', 'coverage', 'both', 'E67 / E68 * 100', 'percent', FALSE, 'cumulative', 'ekavach'),
+  (25, 'IND_NQAS_CERTIFIED_PCT', '% of public health facilities certified with NQAS', 'data_quality', 'quality', 'both', 'E69 / E70 * 100', 'percent', FALSE, 'monthly', 'state_report'),
+  (26, 'IND_UPKSK_ALL_SERVICES_PCT', '% of facilities (DH/CHC/PHC) conducting all services as per UPKSK exception report', 'data_quality', 'quality', 'both', 'facilities_meeting_norms / total_facilities_upksk * 100', 'percent', FALSE, 'monthly', 'hmis'),
+  (27, 'IND_EDL_DRUG_AVAIL_PCT', 'Average percentage availability of drugs against RC available for EDL per facility', 'data_quality', 'quality', 'both', 'avg(E92_available/E93_rc) across facilities', 'percent', FALSE, 'monthly', 'dvdms'),
+  (28, 'IND_FAMS_BUDGET_UTIL_PCT', '% of Budget utilized against limit assigned (cumulative) - FAMS', 'finance', 'coverage', 'district', 'E93 / E94 * 100', 'percent', FALSE, 'cumulative', 'fams'),
+  (29, 'IND_GOLDEN_CARD_PCT', '% of Golden cards distributed against eligible families', 'finance', 'coverage', 'district', 'E95 / E96 * 100', 'percent', FALSE, 'monthly', 'pmjay'),
+  (30, 'IND_KOSHWANI_BUDGET_UTIL_PCT', '% of Budget utilized against limit assigned (cumulative) - Koshwani', 'finance', 'coverage', 'district', 'E97 / E98 * 100', 'percent', FALSE, 'cumulative', 'koshwani'),
+  (31, 'IND_ABHA_VS_ENUMERATED_PCT', '% of ABHA seeded/linked/generated against population enumerated in eKavach', 'data_quality', 'data_quality', 'district', 'E99 / E100 * 100', 'percent', FALSE, 'cumulative', 'ekavach'),
+  (32, 'IND_ABHA_NEW_REG_PCT', '% of ABHA-based new registrations in e-kavach against total new registrations', 'data_quality', 'data_quality', 'district', 'E101 / E102 * 100', 'percent', FALSE, 'monthly', 'ekavach'),
+  (33, 'IND_HIS_ACTIVE_FACILITY_PCT', '% of facilities where HIS is active against total facilities in the district', 'data_quality', 'data_quality', 'district', 'E103 / E104 * 100', 'percent', FALSE, 'monthly', 'his'),
+  (34, 'IND_HIS_OPD_VS_HMIS_PCT', '% of OPDs reported in HIS against total OPD reported in HMIS', 'data_quality', 'data_quality', 'district', 'E105 / E106 * 100', 'percent', FALSE, 'monthly', 'his'),
+  (35, 'IND_ABHA_OPD_HIS_PCT', '% of ABHA-based registration against total OPD reported in HIS', 'data_quality', 'data_quality', 'district', 'E107 / E108 * 100', 'percent', FALSE, 'monthly', 'his'),
+  (36, 'IND_ABHA_EHR_LINK_PCT', '% of unique ABHA linked with EHR against ABHA based OPD registration in HIS', 'data_quality', 'data_quality', 'district', 'E109 / E110 * 100', 'percent', FALSE, 'monthly', 'his'),
+  (37, 'IND_PMJAY_ABDM_HIS_PCT', '% of PMJAY empanelled facilities that have adopted ABDM enabled HIS', 'data_quality', 'data_quality', 'district', 'E111 / E112 * 100', 'percent', FALSE, 'monthly', 'his')
+) AS v(sno, code, name, domain, indicator_type, ranking_level, formula_text, unit, is_negative, period_type, source_code)
+JOIN source_system s ON s.code = v.source_code
+ON CONFLICT (code) DO UPDATE SET
+  sno = EXCLUDED.sno,
+  name = EXCLUDED.name,
+  domain = EXCLUDED.domain,
+  indicator_type = EXCLUDED.indicator_type,
+  ranking_level = EXCLUDED.ranking_level,
+  formula_text = EXCLUDED.formula_text,
+  unit = EXCLUDED.unit,
+  is_negative = EXCLUDED.is_negative,
+  period_type = EXCLUDED.period_type,
+  primary_source_id = EXCLUDED.primary_source_id,
+  updated_at = NOW();
+
+-- Indicator levels from ranking_level
+DELETE FROM indicator_level WHERE indicator_id IN (SELECT id FROM indicator);
+INSERT INTO indicator_level (indicator_id, level)
+SELECT i.id, lvl.level
+FROM indicator i
+JOIN LATERAL (
+  SELECT unnest(
+    CASE i.ranking_level
+      WHEN 'district' THEN ARRAY['division','district']
+      WHEN 'both' THEN ARRAY['division','district','block']
+      WHEN 'block' THEN ARRAY['division','district','block']
+      WHEN 'facility' THEN ARRAY['division','district','block','facility']
+      ELSE ARRAY['division','district']
+    END
+  ) AS level
+) lvl ON TRUE
+ON CONFLICT DO NOTHING;
+
+-- Components
+-- Clear legacy simple-ratio mapping before re-seed of combined ANC+Hb components
+DELETE FROM indicator_component
+WHERE indicator_id = (SELECT id FROM indicator WHERE code = 'IND_ANC_4PLUS_PCT');
+
+INSERT INTO indicator_component (indicator_id, data_element_id, role, sort_order, expression_note)
+SELECT i.id, d.id, c.role, c.sort_order, c.expression_note
+FROM (VALUES
+  ('IND_CHC_FRU_CSECTION_PCT', 'DE_V65_CSECTION', 'numerator_part', 1, 'Count CHC-FRUs with >=10 C-sections'),
+  ('IND_CHC_FRU_CSECTION_PCT', 'DE_UPKSK_FRU_D', 'denominator', 2, 'Designated CHC-FRU'),
+  ('IND_ANC_1ST_TRIMESTER_PCT', 'E4', 'numerator', 1, NULL),
+  ('IND_ANC_1ST_TRIMESTER_PCT', 'E5', 'denominator', 2, NULL),
+  ('IND_ANC_4PLUS_PCT', 'E6', 'numerator_part', 1, '1a1: PW with 4+ ANC'),
+  ('IND_ANC_4PLUS_PCT', 'E_ELA_PW', 'denominator_part', 2, '1a2 & 1b2: annual ELA PW (divide by 12 for monthly)'),
+  ('IND_ANC_4PLUS_PCT', 'E_HB4_TEST', 'numerator_part', 3, '1b1: PW Hb tested 4+ times'),
+  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'E8', 'numerator_part', 1, 'Public Mantra'),
+  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'E9', 'numerator_part', 2, 'Private HMIS'),
+  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'E10', 'denominator', 3, 'DGFW'),
+  ('IND_NORMAL_DEL_STAY48_PCT', 'DE_MANTRA_STAY48_FAC', 'numerator', 1, NULL),
+  ('IND_NORMAL_DEL_STAY48_PCT', 'DE_MANTRA_NORMAL_DEL_FAC', 'denominator', 2, NULL),
+  ('IND_HRP_MANAGED_PCT', 'DE_V17_HTN_MANAGED', 'numerator_part', 1, 'managed'),
+  ('IND_HRP_MANAGED_PCT', 'DE_V25_ANAEMIA_TREATED', 'numerator_part', 2, 'managed'),
+  ('IND_HRP_MANAGED_PCT', 'DE_V28_GDM_MANAGED', 'numerator_part', 3, 'managed'),
+  ('IND_HRP_MANAGED_PCT', 'DE_V36_THYROID_TREATED', 'numerator_part', 4, 'managed'),
+  ('IND_HRP_MANAGED_PCT', 'DE_V16_HTN_DETECTED', 'denominator_part', 5, 'identified'),
+  ('IND_HRP_MANAGED_PCT', 'DE_V24_HB_LE7', 'denominator_part', 6, 'identified'),
+  ('IND_HRP_MANAGED_PCT', 'DE_V27_GDM_POS', 'denominator_part', 7, 'identified'),
+  ('IND_HRP_MANAGED_PCT', 'DE_V35_THYROID_POS', 'denominator_part', 8, 'identified'),
+  ('IND_VHND_PCT', 'E22', 'numerator', 1, NULL),
+  ('IND_VHND_PCT', 'E23', 'denominator', 2, NULL),
+  ('IND_BIRTH_REG_PCT', 'E24', 'numerator', 1, NULL),
+  ('IND_BIRTH_REG_PCT', 'E25', 'denominator', 2, NULL),
+  ('IND_ANM_LOGIN_PCT', 'E26', 'numerator', 1, NULL),
+  ('IND_ANM_LOGIN_PCT', 'E27', 'denominator', 2, NULL),
+  ('IND_PERINATAL_DEATH_PCT', 'DE_V71_FRESH_SB', 'numerator_part', 1, NULL),
+  ('IND_PERINATAL_DEATH_PCT', 'DE_V72_MAC_SB', 'numerator_part', 2, NULL),
+  ('IND_PERINATAL_DEATH_PCT', 'DE_V455_NB_DEATH_1W', 'numerator_part', 3, NULL),
+  ('IND_PERINATAL_DEATH_PCT', 'DE_V68_LB_MALE', 'denominator_part', 4, NULL),
+  ('IND_PERINATAL_DEATH_PCT', 'DE_V69_LB_FEMALE', 'denominator_part', 5, NULL),
+  ('IND_LBW_PCT', 'E35', 'numerator', 1, NULL),
+  ('IND_LBW_PCT', 'E36', 'denominator', 2, NULL),
+  ('IND_NBSU_BOR', 'E37', 'numerator', 1, NULL),
+  ('IND_NBSU_BOR', 'E38', 'denominator', 2, NULL),
+  ('IND_SNCU_DISCHARGE_PCT', 'E39', 'numerator', 1, NULL),
+  ('IND_SNCU_DISCHARGE_PCT', 'E40', 'denominator', 2, NULL),
+  ('IND_HBNC_SICK_REFERRAL_PCT', 'DE_V63_SICK_NB_REF', 'numerator', 1, NULL),
+  ('IND_HBNC_SICK_REFERRAL_PCT', 'DE_V62_HBNC_VISITS', 'denominator', 2, NULL),
+  ('IND_FULL_IMMUNIZATION_PCT', 'E43', 'numerator', 1, NULL),
+  ('IND_FULL_IMMUNIZATION_PCT', 'E44', 'denominator', 2, NULL),
+  ('IND_MR2_PCT', 'E45', 'numerator', 1, NULL),
+  ('IND_MR2_PCT', 'E46', 'denominator', 2, NULL),
+  ('IND_ASHA_AVG_INCENTIVE', 'E47', 'numerator_part', 1, 'Urban incentives'),
+  ('IND_ASHA_AVG_INCENTIVE', 'E48', 'numerator_part', 2, 'Rural incentives'),
+  ('IND_ASHA_AVG_INCENTIVE', 'E49', 'denominator_part', 3, 'Urban ASHAs'),
+  ('IND_ASHA_AVG_INCENTIVE', 'E50', 'denominator_part', 4, 'Rural ASHAs'),
+  ('IND_FUNCTIONAL_AAM_PCT', 'E51', 'numerator_part', 1, 'report days'),
+  ('IND_FUNCTIONAL_AAM_PCT', 'E52', 'numerator_part', 2, 'JAS meeting'),
+  ('IND_FUNCTIONAL_AAM_PCT', 'E53', 'numerator_part', 3, 'wellness sessions'),
+  ('IND_FUNCTIONAL_AAM_PCT', 'E54', 'numerator_part', 4, 'teleconsultations'),
+  ('IND_FUNCTIONAL_AAM_PCT', 'E55', 'numerator_part', 5, 'drug indent'),
+  ('IND_FUNCTIONAL_AAM_PCT', 'E56', 'denominator', 6, 'designated AAM'),
+  ('IND_UDSP_REPORTING_PCT', 'E57', 'numerator', 1, NULL),
+  ('IND_UDSP_REPORTING_PCT', 'E58', 'denominator', 2, NULL),
+  ('IND_TB_NOTIFICATION_RATE', 'E59', 'numerator', 1, NULL),
+  ('IND_TB_NOTIFICATION_RATE', 'E60', 'denominator', 2, NULL),
+  ('IND_TB_SUCCESS_PCT', 'E61', 'numerator', 1, NULL),
+  ('IND_TB_SUCCESS_PCT', 'E62', 'denominator', 2, NULL),
+  ('IND_DRTB_SUCCESS_PCT', 'E63', 'numerator', 1, NULL),
+  ('IND_DRTB_SUCCESS_PCT', 'E64', 'denominator', 2, NULL),
+  ('IND_HTN_SCREEN_30PLUS_PCT', 'E65', 'numerator', 1, NULL),
+  ('IND_HTN_SCREEN_30PLUS_PCT', 'E66', 'denominator', 2, NULL),
+  ('IND_DIABETES_SCREEN_30PLUS_PCT', 'E67', 'numerator', 1, NULL),
+  ('IND_DIABETES_SCREEN_30PLUS_PCT', 'E68', 'denominator', 2, NULL),
+  ('IND_NQAS_CERTIFIED_PCT', 'E69', 'numerator', 1, NULL),
+  ('IND_NQAS_CERTIFIED_PCT', 'E70', 'denominator', 2, NULL),
+  ('IND_UPKSK_ALL_SERVICES_PCT', 'E89', 'numerator', 1, 'facilities meeting norms'),
+  ('IND_UPKSK_ALL_SERVICES_PCT', 'E90', 'denominator', 2, 'total facilities UPKSK'),
+  ('IND_EDL_DRUG_AVAIL_PCT', 'E91', 'numerator_part', 1, 'EDL available'),
+  ('IND_EDL_DRUG_AVAIL_PCT', 'E92', 'denominator_part', 2, 'RC available'),
+  ('IND_EDL_DRUG_AVAIL_PCT', 'E92_FAC_COUNT', 'part', 3, 'facility count for average'),
+  ('IND_FAMS_BUDGET_UTIL_PCT', 'E93', 'numerator', 1, NULL),
+  ('IND_FAMS_BUDGET_UTIL_PCT', 'E94', 'denominator', 2, NULL),
+  ('IND_GOLDEN_CARD_PCT', 'E95', 'numerator', 1, NULL),
+  ('IND_GOLDEN_CARD_PCT', 'E96', 'denominator', 2, NULL),
+  ('IND_KOSHWANI_BUDGET_UTIL_PCT', 'E97', 'numerator', 1, NULL),
+  ('IND_KOSHWANI_BUDGET_UTIL_PCT', 'E98', 'denominator', 2, NULL),
+  ('IND_ABHA_VS_ENUMERATED_PCT', 'E99', 'numerator', 1, NULL),
+  ('IND_ABHA_VS_ENUMERATED_PCT', 'E100', 'denominator', 2, NULL),
+  ('IND_ABHA_NEW_REG_PCT', 'E101', 'numerator', 1, NULL),
+  ('IND_ABHA_NEW_REG_PCT', 'E102', 'denominator', 2, NULL),
+  ('IND_HIS_ACTIVE_FACILITY_PCT', 'E103', 'numerator', 1, NULL),
+  ('IND_HIS_ACTIVE_FACILITY_PCT', 'E104', 'denominator', 2, NULL),
+  ('IND_HIS_OPD_VS_HMIS_PCT', 'E105', 'numerator', 1, NULL),
+  ('IND_HIS_OPD_VS_HMIS_PCT', 'E106', 'denominator', 2, NULL),
+  ('IND_ABHA_OPD_HIS_PCT', 'E107', 'numerator', 1, NULL),
+  ('IND_ABHA_OPD_HIS_PCT', 'E108', 'denominator', 2, NULL),
+  ('IND_ABHA_EHR_LINK_PCT', 'E109', 'numerator', 1, NULL),
+  ('IND_ABHA_EHR_LINK_PCT', 'E110', 'denominator', 2, NULL),
+  ('IND_PMJAY_ABDM_HIS_PCT', 'E111', 'numerator', 1, NULL),
+  ('IND_PMJAY_ABDM_HIS_PCT', 'E112', 'denominator', 2, NULL)
+) AS c(ind_code, de_code, role, sort_order, expression_note)
+JOIN indicator i ON i.code = c.ind_code
+JOIN data_element d ON d.code = c.de_code
+ON CONFLICT (indicator_id, data_element_id, role) DO UPDATE SET
+  sort_order = EXCLUDED.sort_order,
+  expression_note = EXCLUDED.expression_note,
+  is_active = TRUE;
+

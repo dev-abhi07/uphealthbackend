@@ -1,0 +1,26 @@
+# META
+Name,% of pregnant women delivered in institution against estimated delivery
+Data Source,"Mantra (public delivery), HMIS (private deliveries), Estimates released by DGFW"
+Period,2026-05
+Indicator calculation Level,Block (data may be provided below block / block level)
+Template grain,block
+Instructions,"Do not change District/LGD/Block. Fill Public (Mantra), Private (HMIS), Estimated (DGFW)."
+
+# DATA
+District,District LGD code,Block,Block LGD code,# of institutional deliveries including C section (Public as per Mantra),# of institutional deliveries including C section (Private as per HMIS),# of estimated delivery
+Agra,118,Achhnera,803,,,
+Agra,118,Agra (Urban),900000,,,
+Agra,118,Akola,804,,,
+Agra,118,Bah,805,,,
+Agra,118,Barauli Ahir,806,,,
+Agra,118,Bichpuri,807,,,
+Agra,118,Etmadpur,808,,,
+Agra,118,Fatehabad,809,,,
+Agra,118,Fatehpur Sikri,810,,,
+Agra,118,Jagner,811,,,
+Agra,118,Jaitpur Kalan,812,,,
+Agra,118,Khandauli,813,,,
+Agra,118,Kheragarh,814,,,
+Agra,118,Pinahat,815,,,
+Agra,118,Saiyan,816,,,
+Agra,118,Shamsabad,817,,,

@@ -1,0 +1,29 @@
+# META
+Name,% of CHC-FRUs conducted >=10 C-section per month against designated CHC-FRUs
+Data Source,HMIS / UPKSK
+Period,2026-05
+Indicator calculation Level,District (data may be provided below district / facility level)
+Template grain,facility
+Instructions,Do not change District/LGD/Block/Facility/HFR. Fill only C-section count.
+
+# DATA
+District,District LGD code,Block,Block LGD code,Facility Name,HFR Code,C-section conducted at CHC-FRU during the month
+Agra,118,Achhnera,803,CHC Achhnera,IN0910003704,
+Agra,118,Agra (Urban),900000,District Women Hospital Agra,IN0910024092,
+Agra,118,Bah,805,CHC Bah,IN0910003600,
+Agra,118,Etmadpur,808,CHC Etmadpur,IN0910003731,
+Agra,118,Kheragarh,814,CHC Kheragarh,IN0910003520,
+Agra,118,Shamsabad,817,CHC Shamshabad,IN0910003738,
+Agra,118,Achhnera,803,CHC Kirowali,IN0910003470,
+Agra,118,Akola,804,CHC Akola,IN0910003623,
+Agra,118,Bah,805,CHC Bateswar,IN0910003744,
+Agra,118,Barauli Ahir,806,CHC Baroli Ahir,IN0910003656,
+Agra,118,Bichpuri,807,CHC Bichpuri,IN0910003457,
+Agra,118,Fatehabad,809,CHC Fatehabad,IN0910003539,
+Agra,118,Fatehpur Sikri,810,CHC Fatehpursikri,IN0910003719,
+Agra,118,Jagner,811,CHC Jagner,IN0910003420,
+Agra,118,Jaitpur Kalan,812,CHC Jaitpur Kalan,IN0910003620,
+Agra,118,Khandauli,813,CHC Awalkheda,IN0910003479,
+Agra,118,Khandauli,813,CHC Khandoli,IN0910003393,
+Agra,118,Pinahat,815,CHC Pinahat,IN0910003429,
+Agra,118,Saiyan,816,CHC Saiyan,IN0910003584,

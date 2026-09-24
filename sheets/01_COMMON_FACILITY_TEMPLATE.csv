@@ -1,0 +1,9 @@
+# META
+Name,
+Data Source,
+Period,
+Indicator calculation Level,District
+Template grain,facility
+
+# DATA — fill only value columns; geo is pre-filled by system
+District,District LGD code,Block,Block LGD code,Facility Name,HFR Code,VALUE_COLUMN_1,VALUE_COLUMN_2

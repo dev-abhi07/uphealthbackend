@@ -1,0 +1,11 @@
+# META
+Name,(select district-level indicator e.g. Birth registration / ANM login)
+Data Source,
+Period,2026-05
+Indicator calculation Level,District
+Template grain,district
+Instructions,Fill value columns only. Geo is fixed for your district.
+
+# DATA
+District,District LGD code,VALUE_1 (e.g. births registered E24 / ANMs logged in E26),VALUE_2 (e.g. active ANMs E27)
+Agra,118,,
