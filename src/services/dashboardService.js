@@ -1,10 +1,18 @@
+/**
+ * HMIS-style dashboard APIs — reads ONLY indicator_outcome_* tables.
+ * Division metrics are rolled up from district rows.
+ * Legacy kpi_value / fn_dashboard_* are not used.
+ */
 const { query } = require('../db/pool');
-
-function num(v) {
-  if (v === null || v === undefined) return null;
-  const n = Number(v);
-  return Number.isNaN(n) ? null : n;
-}
+const { parsePeriodInput } = require('../outcome/outcomeConfig');
+const store = require('../outcome/outcomeDistrictStore');
+const {
+  resolveOutcomePeriod,
+  getDivisionCompositeRows,
+  resolveMasterIndicator,
+  num,
+} = require('../outcome/outcomeRankingQueries');
+const { resolveExcelDomainKey } = require('../ranking/rankingRegistry');
 
 function pickArgs(filters = {}) {
   return {
@@ -12,53 +20,184 @@ function pickArgs(filters = {}) {
     division_id: filters.division_id ? Number(filters.division_id) : null,
     district_id: filters.district_id ? Number(filters.district_id) : null,
     block_id: filters.block_id ? Number(filters.block_id) : null,
-    period: filters.period || '2026-05',
+    period: filters.period || null,
     band_size: Number(filters.band_size) > 0 ? Number(filters.band_size) : 25,
     section: filters.section || filters.type || filters.domain || null,
   };
 }
 
-function mapIndicatorRow(r) {
+async function resolveDistrictLgd(districtId) {
+  if (districtId == null) return null;
+  const { rows } = await query(
+    `SELECT lgd_code FROM district WHERE id = $1 LIMIT 1`,
+    [Number(districtId)]
+  );
+  return rows[0] ? Number(rows[0].lgd_code) : null;
+}
+
+async function resolveScope(filters) {
+  const a = pickArgs(filters);
+  const periodRow = await resolveOutcomePeriod(a.period);
+  if (!periodRow) {
+    return { a, periodRow: null, districtLgd: null };
+  }
+  const districtLgd = await resolveDistrictLgd(a.district_id);
+  return { a, periodRow, districtLgd };
+}
+
+function formatDisplayValue(value, unit) {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  if (Number.isNaN(n)) return null;
+  if (unit === 'percent') return `${Number(n.toFixed(2))}%`;
+  if (unit === 'amount' || unit === 'rupees') return `Rs.${Number(n.toFixed(2))}`;
+  if (unit === 'index') return Number(n.toFixed(4));
+  if (unit === 'ratio' || unit === 'rate') return `${Number(n.toFixed(2))}`;
+  return `${Number(n.toFixed(2))}`;
+}
+
+async function loadIndicatorValuesForScope({ year, month, divisionId, districtLgd }) {
+  const avgs = await store.getIndicatorAverages({
+    year,
+    month,
+    divisionId: districtLgd != null ? null : divisionId,
+    districtLgd,
+  });
+  const avgMap = new Map(avgs.map((r) => [r.indicator_code, num(r.avg_value)]));
+
+  const { rows: master } = await query(
+    `
+    SELECT id, sno, code, name, short_name, unit, domain, domain_label, indicator_type,
+           is_negative, weight, formula_text, numerator_text, denominator_text
+    FROM indicator
+    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
+    ORDER BY sno NULLS LAST, code
+    `
+  );
+
+  return master.map((i) => {
+    const value = avgMap.has(i.code) ? avgMap.get(i.code) : null;
+    const excel = resolveExcelDomainKey(i.domain_label, i.domain);
+    return {
+      indicator_id: Number(i.id),
+      sno: i.sno,
+      code: i.code,
+      name: i.short_name || i.name,
+      full_name: i.name,
+      domain: excel.key,
+      domain_label: excel.label,
+      domain_slug: i.domain || null,
+      indicator_type: i.indicator_type,
+      unit: i.unit,
+      is_negative: !!i.is_negative,
+      weight: num(i.weight),
+      formula_text: i.formula_text,
+      numerator: null,
+      denominator: null,
+      value,
+      display_value: formatDisplayValue(value, i.unit),
+      period_label: `${year}-${String(month).padStart(2, '0')}`,
+    };
+  });
+}
+
+async function overallCompositeForScope({ year, month, divisionId, districtLgd }) {
+  const row = await store.getCompositeAverage({ year, month, divisionId, districtLgd });
+  return num(row.avg_value);
+}
+
+/** Screenshot TYPE accordion order */
+const TYPE_SECTIONS = [
+  { key: 'coverage', label: 'COVERAGE', color: 'orange' },
+  { key: 'quality', label: 'QUALITY', color: 'red' },
+  { key: 'data_quality', label: 'DATA QUALITY', color: 'brown' },
+];
+
+/** Screenshot DOMAIN accordion — Excel Domain column (Ind_definition). */
+const DOMAIN_SECTIONS = [
+  { key: 'maternal_health', label: 'Maternal Health', color: 'orange' },
+  { key: 'community_outreach', label: 'Community outreach', color: 'brown' },
+  { key: 'health_system_strengthening', label: 'Health system strengthening', color: 'grey' },
+  { key: 'child_health', label: 'Child Health', color: 'grey' },
+  { key: 'immunization', label: 'Immunization', color: 'grey' },
+  { key: 'national_program', label: 'National Program', color: 'coral' },
+  { key: 'ayushman_bharat_digital_mission', label: 'Ayushman Bharat Digital Mission', color: 'blue' },
+];
+
+function mapAccordionIndicator(r) {
   return {
-    indicator_id: Number(r.indicator_id),
+    indicator_id: r.indicator_id,
     sno: r.sno,
     code: r.code,
     name: r.name,
-    domain: r.domain,
-    indicator_type: r.indicator_type,
+    domain: r.domain || null,
+    domain_label: r.domain_label || null,
+    indicator_type: r.indicator_type || null,
     unit: r.unit,
     is_negative: r.is_negative,
-    weight: num(r.weight),
+    value: r.value,
+    display_value: r.display_value,
+    numerator: r.numerator,
+    denominator: r.denominator,
     formula_text: r.formula_text,
-    geo_level: r.geo_level,
-    division_id: r.division_id != null ? Number(r.division_id) : null,
-    district_id: r.district_id != null ? Number(r.district_id) : null,
-    block_id: r.block_id != null ? Number(r.block_id) : null,
-    numerator: num(r.numerator),
-    denominator: num(r.denominator),
-    value: num(r.value),
-    computed_at: r.computed_at,
-    period_label: r.period_label,
+    info: r.formula_text || null,
   };
 }
 
-/**
- * BY INDICATORS — uses fn_dashboard_by_indicators
- */
-async function getByIndicators(filters = {}) {
-  const a = pickArgs(filters);
-  const { rows } = await query(
-    `SELECT * FROM fn_dashboard_by_indicators($1, $2, $3, $4, $5)`,
-    [a.geo_level, a.division_id, a.district_id, a.block_id, a.period]
-  );
+function groupScore(indicators) {
+  const vals = indicators.map((i) => i.value).filter((v) => v != null);
+  if (!vals.length) return null;
+  return Number((vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(4));
+}
 
-  const indicators = rows.map(mapIndicatorRow);
-  const composite = rows.length ? num(rows[0].overall_composite_score) : null;
+async function getByIndicators(filters = {}) {
+  const { a, periodRow, districtLgd } = await resolveScope(filters);
+  if (!periodRow) {
+    return {
+      view: 'by_indicators',
+      source: 'indicator_outcome',
+      has_data: false,
+      message: 'No outcome data for this period',
+      period: a.period,
+      geo_level: a.geo_level,
+      overall_composite_score: null,
+      count: 0,
+      indicators: [],
+    };
+  }
+
+  if (a.geo_level === 'block' || a.block_id) {
+    return {
+      view: 'by_indicators',
+      source: 'indicator_outcome',
+      has_data: false,
+      message: 'Block-level outcome data is not available',
+      period: periodRow.label,
+      geo_level: 'block',
+      overall_composite_score: null,
+      count: 0,
+      indicators: [],
+    };
+  }
+
+  const indicators = await loadIndicatorValuesForScope({
+    year: periodRow.year,
+    month: periodRow.month,
+    divisionId: a.division_id,
+    districtLgd,
+  });
+  const composite = await overallCompositeForScope({
+    year: periodRow.year,
+    month: periodRow.month,
+    divisionId: a.division_id,
+    districtLgd,
+  });
 
   return {
     view: 'by_indicators',
-    source: 'pgsql:fn_dashboard_by_indicators',
-    period: a.period,
+    source: 'indicator_outcome',
+    has_data: indicators.some((i) => i.value != null),
+    period: periodRow.label,
     geo_level: a.geo_level,
     filters: {
       division_id: a.division_id,
@@ -71,90 +210,18 @@ async function getByIndicators(filters = {}) {
   };
 }
 
-/** Screenshot TYPE accordion order */
-const TYPE_SECTIONS = [
-  { key: 'coverage', label: 'COVERAGE', color: 'orange' },
-  { key: 'quality', label: 'QUALITY', color: 'red' },
-  { key: 'data_quality', label: 'DATA QUALITY', color: 'brown' },
-];
-
-/** Screenshot DOMAIN accordion order */
-const DOMAIN_SECTIONS = [
-  { key: 'ante_natal', label: 'ANTE NATAL', color: 'orange' },
-  { key: 'delivery_care', label: 'DELIVERY CARE', color: 'brown' },
-  { key: 'post_natal', label: 'POST NATAL CARE', color: 'grey' },
-  { key: 'immunization', label: 'IMMUNIZATION', color: 'grey' },
-  { key: 'family_planning', label: 'FAMILY PLANNING', color: 'grey' },
-  { key: 'communicable_diseases', label: 'COMMUNICABLE DISEASES', color: 'coral' },
-  { key: 'finance', label: 'FINANCE', color: 'grey' },
-  { key: 'data_quality', label: 'DATA QUALITY', color: 'brown' },
-];
-
-function formatDisplayValue(value, unit) {
-  if (value === null || value === undefined) return null;
-  const n = Number(value);
-  if (Number.isNaN(n)) return null;
-  if (unit === 'percent') return `${Number(n.toFixed(2))}%`;
-  if (unit === 'amount' || unit === 'rupees') return `Rs.${Number(n.toFixed(2))}`;
-  if (unit === 'ratio' || unit === 'rate') return `${Number(n.toFixed(2))}`;
-  return `${Number(n.toFixed(2))}`;
-}
-
-function mapAccordionIndicator(r) {
-  const value = num(r.value);
-  return {
-    indicator_id: Number(r.indicator_id),
-    sno: r.sno,
-    code: r.code,
-    name: r.name,
-    domain: r.domain || null,
-    indicator_type: r.indicator_type || null,
-    unit: r.unit,
-    is_negative: r.is_negative,
-    value,
-    display_value: formatDisplayValue(value, r.unit),
-    numerator: num(r.numerator),
-    denominator: num(r.denominator),
-    formula_text: r.formula_text,
-    info: r.formula_text || null,
-  };
-}
-
-/**
- * BY TYPE — screenshot accordion (COVERAGE / QUALITY / DATA QUALITY)
- * Always returns all 3 sections (empty ones still listed with +)
- * Optional filters.section = coverage|quality|data_quality to expand one
- */
 async function getByType(filters = {}) {
-  const a = pickArgs(filters);
+  const byInd = await getByIndicators(filters);
   const sectionFilter = filters.section || filters.type || null;
-
-  const { rows } = await query(
-    `SELECT * FROM fn_dashboard_by_type($1, $2, $3, $4, $5)`,
-    [a.geo_level, a.division_id, a.district_id, a.block_id, a.period]
-  );
-
   const byKey = new Map();
-  let composite = null;
-
-  for (const r of rows) {
-    composite = num(r.overall_composite_score);
-    const key = r.indicator_type || 'other';
-    if (!byKey.has(key)) byKey.set(key, { group_score: num(r.group_score), indicators: [] });
-    byKey.get(key).indicators.push(mapAccordionIndicator(r));
-  }
-
-  // if no rows, still get composite via fn
-  if (composite === null) {
-    const { rows: s } = await query(
-      `SELECT fn_composite_score($1,$2,$3,$4,$5) AS score`,
-      [a.geo_level, a.division_id, a.district_id, a.block_id, a.period]
-    );
-    composite = num(s[0]?.score);
+  for (const ind of byInd.indicators || []) {
+    const key = ind.indicator_type || 'other';
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(ind);
   }
 
   let sections = TYPE_SECTIONS.map((def, idx) => {
-    const found = byKey.get(def.key) || { group_score: null, indicators: [] };
+    const list = byKey.get(def.key) || [];
     const expanded = sectionFilter ? sectionFilter === def.key : idx === 0;
     return {
       key: def.key,
@@ -162,75 +229,61 @@ async function getByType(filters = {}) {
       color: def.color,
       expandable: true,
       expanded,
-      count: found.indicators.length,
-      group_score: found.group_score,
-      // accordion: when collapsed UI can hide indicators; API still sends list
-      indicators: sectionFilter && sectionFilter !== def.key ? [] : found.indicators,
-      has_data: found.indicators.length > 0,
+      count: list.length,
+      group_score: groupScore(list),
+      indicators:
+        sectionFilter && sectionFilter !== def.key
+          ? []
+          : list.map(mapAccordionIndicator),
+      has_data: list.length > 0,
     };
   });
 
-  // if client asked one section only, return just that section fully loaded
   if (sectionFilter) {
     sections = sections
       .filter((s) => s.key === sectionFilter)
       .map((s) => {
-        const found = byKey.get(s.key) || { group_score: null, indicators: [] };
-        return { ...s, expanded: true, indicators: found.indicators, count: found.indicators.length };
+        const list = byKey.get(s.key) || [];
+        return {
+          ...s,
+          expanded: true,
+          indicators: list.map(mapAccordionIndicator),
+          count: list.length,
+        };
       });
   }
 
   return {
     view: 'by_type',
     tab: 'BY TYPE',
-    source: 'pgsql:fn_dashboard_by_type',
-    period: a.period,
-    geo_level: a.geo_level,
+    source: 'indicator_outcome',
+    has_data: byInd.has_data,
+    period: byInd.period,
+    geo_level: byInd.geo_level,
     filters: {
-      division_id: a.division_id,
-      district_id: a.district_id,
-      block_id: a.block_id,
+      division_id: byInd.filters?.division_id ?? null,
+      district_id: byInd.filters?.district_id ?? null,
+      block_id: byInd.filters?.block_id ?? null,
       section: sectionFilter,
     },
-    overall_composite_score: composite,
+    overall_composite_score: byInd.overall_composite_score,
     overall_composite_label: 'OVERALL COMPOSITE SCORE',
     sections,
   };
 }
 
-/**
- * BY DOMAIN — screenshot accordion (ANTE NATAL … DATA QUALITY)
- * Always returns all 8 domain bars; optional filters.section to expand one
- */
 async function getByDomain(filters = {}) {
-  const a = pickArgs(filters);
+  const byInd = await getByIndicators(filters);
   const sectionFilter = filters.section || filters.domain || null;
-
-  const { rows } = await query(
-    `SELECT * FROM fn_dashboard_by_domain($1, $2, $3, $4, $5)`,
-    [a.geo_level, a.division_id, a.district_id, a.block_id, a.period]
-  );
-
   const byKey = new Map();
-  let composite = null;
-
-  for (const r of rows) {
-    composite = num(r.overall_composite_score);
-    const key = r.domain || 'other';
-    if (!byKey.has(key)) byKey.set(key, { group_score: num(r.group_score), indicators: [] });
-    byKey.get(key).indicators.push(mapAccordionIndicator({ ...r, domain: r.domain }));
-  }
-
-  if (composite === null) {
-    const { rows: s } = await query(
-      `SELECT fn_composite_score($1,$2,$3,$4,$5) AS score`,
-      [a.geo_level, a.division_id, a.district_id, a.block_id, a.period]
-    );
-    composite = num(s[0]?.score);
+  for (const ind of byInd.indicators || []) {
+    const key = ind.domain || 'other';
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(ind);
   }
 
   let sections = DOMAIN_SECTIONS.map((def) => {
-    const found = byKey.get(def.key) || { group_score: null, indicators: [] };
+    const list = byKey.get(def.key) || [];
     const expanded = sectionFilter ? sectionFilter === def.key : false;
     return {
       key: def.key,
@@ -238,11 +291,13 @@ async function getByDomain(filters = {}) {
       color: def.color,
       expandable: true,
       expanded,
-      count: found.indicators.length,
-      group_score: found.group_score,
-      // screenshot shows domains collapsed by default; still include indicators for app
-      indicators: sectionFilter && sectionFilter !== def.key ? [] : found.indicators,
-      has_data: found.indicators.length > 0,
+      count: list.length,
+      group_score: groupScore(list),
+      indicators:
+        sectionFilter && sectionFilter !== def.key
+          ? []
+          : list.map(mapAccordionIndicator),
+      has_data: list.length > 0,
     };
   });
 
@@ -250,68 +305,112 @@ async function getByDomain(filters = {}) {
     sections = sections
       .filter((s) => s.key === sectionFilter)
       .map((s) => {
-        const found = byKey.get(s.key) || { group_score: null, indicators: [] };
-        return { ...s, expanded: true, indicators: found.indicators, count: found.indicators.length };
+        const list = byKey.get(s.key) || [];
+        return {
+          ...s,
+          expanded: true,
+          indicators: list.map(mapAccordionIndicator),
+          count: list.length,
+        };
       });
   }
 
   return {
     view: 'by_domain',
     tab: 'BY DOMAIN',
-    source: 'pgsql:fn_dashboard_by_domain',
-    period: a.period,
-    geo_level: a.geo_level,
+    source: 'indicator_outcome',
+    has_data: byInd.has_data,
+    period: byInd.period,
+    geo_level: byInd.geo_level,
     filters: {
-      division_id: a.division_id,
-      district_id: a.district_id,
-      block_id: a.block_id,
+      division_id: byInd.filters?.division_id ?? null,
+      district_id: byInd.filters?.district_id ?? null,
+      block_id: byInd.filters?.block_id ?? null,
       section: sectionFilter,
     },
-    overall_composite_score: composite,
+    overall_composite_score: byInd.overall_composite_score,
     overall_composite_label: 'OVERALL COMPOSITE SCORE',
     sections,
   };
 }
 
-/**
- * PERFORMANCE — uses fn_district_performance
- */
 async function getPerformance(filters = {}) {
   const a = pickArgs(filters);
-  const { rows } = await query(
-    `SELECT * FROM fn_district_performance($1, $2)`,
-    [a.period, a.band_size]
-  );
-
-  const bands = {
-    top: { label: `Top ${a.band_size} Districts`, color: 'green', count: 0, districts: [] },
-    moderate: { label: `Moderate ${a.band_size} Districts`, color: 'orange', count: 0, districts: [] },
-    bottom: { label: `Bottom ${a.band_size} Districts`, color: 'red', count: 0, districts: [] },
-  };
-
-  let totalRanked = 0;
-
-  for (const r of rows) {
-    totalRanked = Number(r.total_ranked) || totalRanked;
-    const bandKey = r.band;
-    if (!bands[bandKey]) continue;
-    bands[bandKey].label = r.band_label;
-    bands[bandKey].color = r.band_color;
-    bands[bandKey].districts.push({
-      district_id: Number(r.district_id),
-      district_name: r.district_name,
-      lgd_code: r.lgd_code,
-      division_id: Number(r.division_id),
-      division_name: r.division_name,
-      indicator_count: Number(r.indicator_count),
-      composite_score: num(r.composite_score),
-      rank: Number(r.rank),
-    });
+  const periodRow = await resolveOutcomePeriod(a.period);
+  if (!periodRow) {
+    return {
+      view: 'by_performance',
+      source: 'indicator_outcome',
+      has_data: false,
+      message: 'No outcome data for this period',
+      period: a.period,
+      band_size: a.band_size,
+      total_districts_ranked: 0,
+      overall_composite_score: null,
+      bands: {
+        top: { label: `Top ${a.band_size} Districts`, color: 'green', count: 0, districts: [] },
+        moderate: { label: 'Moderate', color: 'orange', count: 0, districts: [] },
+        bottom: { label: `Bottom ${a.band_size} Districts`, color: 'red', count: 0, districts: [] },
+      },
+    };
   }
 
-  bands.top.count = bands.top.districts.length;
-  bands.moderate.count = bands.moderate.districts.length;
-  bands.bottom.count = bands.bottom.districts.length;
+  const headers = await store.getDistrictHeaders({
+    year: periodRow.year,
+    month: periodRow.month,
+    divisionId: a.division_id,
+  });
+
+  const ranked = [...headers]
+    .filter((h) => h.index_outcome != null)
+    .sort((x, y) => {
+      const rx = x.rank_outcome != null ? Number(x.rank_outcome) : 9999;
+      const ry = y.rank_outcome != null ? Number(y.rank_outcome) : 9999;
+      if (rx !== ry) return rx - ry;
+      return Number(y.index_outcome) - Number(x.index_outcome);
+    });
+
+  const total = ranked.length;
+  const topN = Math.min(a.band_size, Math.max(1, Math.ceil(total / 3)));
+  const bands = {
+    top: {
+      label: `Top ${topN} Districts`,
+      color: 'green',
+      count: 0,
+      districts: [],
+    },
+    moderate: {
+      label: 'Moderate',
+      color: 'orange',
+      count: 0,
+      districts: [],
+    },
+    bottom: {
+      label: `Bottom ${topN} Districts`,
+      color: 'red',
+      count: 0,
+      districts: [],
+    },
+  };
+
+  ranked.forEach((h, idx) => {
+    const rank = h.rank_outcome != null ? Number(h.rank_outcome) : idx + 1;
+    let band = 'moderate';
+    if (rank <= topN) band = 'top';
+    else if (rank > total - topN) band = 'bottom';
+    const row = {
+      district_id: h.district_id != null ? Number(h.district_id) : null,
+      district_name: h.district_name,
+      lgd_code: h.district_lgd != null ? String(h.district_lgd) : null,
+      division_id: h.division_id != null ? Number(h.division_id) : null,
+      division_name: h.division_name || null,
+      indicator_count: null,
+      composite_score: num(h.index_outcome),
+      rank,
+    };
+    bands[band].districts.push(row);
+    bands[band].count += 1;
+  });
 
   let districtScore = null;
   if (a.district_id) {
@@ -321,39 +420,28 @@ async function getPerformance(filters = {}) {
 
   return {
     view: 'by_performance',
-    source: 'pgsql:fn_district_performance',
-    period: a.period,
-    band_size: a.band_size,
-    total_districts_ranked: totalRanked,
+    source: 'indicator_outcome',
+    has_data: total > 0,
+    period: periodRow.label,
+    band_size: topN,
+    total_districts_ranked: total,
     overall_composite_score: districtScore,
     bands,
   };
 }
 
-/**
- * Overview — composite via fn_composite_score + counts via by-indicators
- */
 async function getOverview(filters = {}) {
-  const a = pickArgs(filters);
   const byInd = await getByIndicators(filters);
-  const performance = await getPerformance({ period: a.period, band_size: a.band_size });
-
-  const { rows: scoreRows } = await query(
-    `SELECT fn_composite_score($1, $2, $3, $4, $5) AS score`,
-    [a.geo_level, a.division_id, a.district_id, a.block_id, a.period]
-  );
+  const performance = await getPerformance(filters);
 
   return {
     view: 'overview',
-    source: 'pgsql:fn_composite_score+fn_dashboard_by_indicators+fn_district_performance',
-    period: a.period,
-    geo_level: a.geo_level,
-    filters: {
-      division_id: a.division_id,
-      district_id: a.district_id,
-      block_id: a.block_id,
-    },
-    overall_composite_score: num(scoreRows[0]?.score) ?? byInd.overall_composite_score,
+    source: 'indicator_outcome',
+    has_data: byInd.has_data,
+    period: byInd.period,
+    geo_level: byInd.geo_level,
+    filters: byInd.filters,
+    overall_composite_score: byInd.overall_composite_score,
     indicator_count: byInd.count,
     performance_summary: {
       top_count: performance.bands.top.count,
@@ -365,11 +453,16 @@ async function getOverview(filters = {}) {
 }
 
 async function resolvePeriodId(periodLabel) {
-  const { rows } = await query(
-    `SELECT id, label, start_date, end_date FROM time_period WHERE label = $1 LIMIT 1`,
-    [periodLabel || '2026-05']
-  );
-  return rows[0] || null;
+  const p = parsePeriodInput({ period: periodLabel });
+  if (!p) return null;
+  const has = await store.hasDistrictOutcomePeriod(p.year, p.month);
+  if (!has) return null;
+  return {
+    id: null,
+    label: p.period_label,
+    start_date: null,
+    end_date: null,
+  };
 }
 
 module.exports = {
@@ -379,4 +472,7 @@ module.exports = {
   getPerformance,
   getOverview,
   resolvePeriodId,
+  // exported for tests / reuse
+  resolveMasterIndicator,
+  getDivisionCompositeRows,
 };

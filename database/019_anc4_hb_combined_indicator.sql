@@ -1,5 +1,5 @@
 -- =============================================================================
--- Convert IND_ANC_4PLUS_PCT into combined "ANC 4+ with Hb testing" indicator
+-- Convert IND003 into combined "ANC 4+ with Hb testing" indicator
 -- UI formula:
 --   (((1a1 / (1a2 / 12)) + (1b1 / (1b2 / 12))) / 2) * 100
 -- where:
@@ -27,24 +27,24 @@ ON CONFLICT (code) DO UPDATE SET
   period_type = EXCLUDED.period_type,
   updated_at = NOW();
 
--- Update indicator definition (keep code IND_ANC_4PLUS_PCT for stability)
+-- Update indicator definition (keep code IND003 for stability)
 UPDATE indicator SET
   name = 'PW received 4 or more ANC with Hb testing',
   formula_text = '(((1a1 / (1a2 / 12)) + (1b1 / (1b2 / 12))) / 2) * 100',
   primary_source_id = (SELECT id FROM source_system WHERE code = 'ekavach'),
   updated_at = NOW()
-WHERE code = 'IND_ANC_4PLUS_PCT';
+WHERE code = 'IND003';
 
 -- Replace components for this indicator
 DELETE FROM indicator_component
-WHERE indicator_id = (SELECT id FROM indicator WHERE code = 'IND_ANC_4PLUS_PCT');
+WHERE indicator_id = (SELECT id FROM indicator WHERE code = 'IND003');
 
 INSERT INTO indicator_component (indicator_id, data_element_id, role, sort_order, expression_note)
 SELECT i.id, d.id, c.role, c.sort_order, c.expression_note
 FROM (VALUES
-  ('IND_ANC_4PLUS_PCT', 'E6',         'numerator_part',   1, '1a1: PW with 4+ ANC'),
-  ('IND_ANC_4PLUS_PCT', 'E_ELA_PW',   'denominator_part', 2, '1a2 & 1b2: annual ELA PW (divide by 12 for monthly)'),
-  ('IND_ANC_4PLUS_PCT', 'E_HB4_TEST', 'numerator_part',   3, '1b1: PW Hb tested 4+ times')
+  ('IND003', 'E6',         'numerator_part',   1, '1a1: PW with 4+ ANC'),
+  ('IND003', 'E_ELA_PW',   'denominator_part', 2, '1a2 & 1b2: annual ELA PW (divide by 12 for monthly)'),
+  ('IND003', 'E_HB4_TEST', 'numerator_part',   3, '1b1: PW Hb tested 4+ times')
 ) AS c(indicator_code, de_code, role, sort_order, expression_note)
 JOIN indicator i ON i.code = c.indicator_code
 JOIN data_element d ON d.code = c.de_code;
@@ -58,7 +58,7 @@ DELETE FROM fact_component_value WHERE batch_id = 'SAMPLE_ANC4_HB_AGRA_2026_05';
 DELETE FROM kpi_value
 WHERE time_period_id = 6
   AND district_id = 1
-  AND indicator_id = (SELECT id FROM indicator WHERE code = 'IND_ANC_4PLUS_PCT');
+  AND indicator_id = (SELECT id FROM indicator WHERE code = 'IND003');
 
 INSERT INTO fact_component_value
   (data_element_id, source_id, geo_level, division_id, district_id, block_id, time_period_id, value_num, batch_id)
@@ -91,6 +91,6 @@ CROSS JOIN (VALUES
   ('block',    14::bigint, 150::numeric, 200::numeric, 75.00::numeric),
   ('district', NULL,       150::numeric, 200::numeric, 75.00::numeric)
 ) AS v(geo_level, block_id, numerator, denominator, value)
-WHERE i.code = 'IND_ANC_4PLUS_PCT';
+WHERE i.code = 'IND003';
 
 COMMIT;

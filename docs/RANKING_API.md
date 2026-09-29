@@ -1,25 +1,27 @@
 # Ranking dashboard APIs (separate from HMIS `/api/dashboard`)
 
-Do **not** mix with KPI upload. Ranking Excel import fills these tables only.
+## Data source (current)
 
-## Which sheet for UI
+**District + division + block from outcome cache:**
 
-Use these files:
+| Table | Role |
+|--------|------|
+| `indicator_outcome_district` | Composite: `index_outcome`, `rank_outcome` |
+| `indicator_outcome_district_value` | IND001–IND037 values |
+| `indicator_outcome_block` | Block composite + statewide `rank_outcome` |
+| `indicator_outcome_block_value` | Block IND### values |
 
-```text
-By DIvision/<Month>/Data_Report_Requirement-*_division.xlsx
-By District/<Month>/Data_Report_Requirement-*_district.xlsx
-By District/<Month>/Agra-Data_Report_Requirement-*_block.xlsx
-```
+- **District:** direct from cache  
+- **Division:** rolled up from districts (`AVG(index_outcome)`, ranks recomputed; IND = avg by division)  
+- **Block:** direct from `OUTCOME_BLOCK_API_URL` cache  
+- **Not used for plot:** Excel `ranking_value`, HMIS `kpi_value` / `fn_dashboard_*`
 
-Example (Jan 2026):
+Periods: `GET /api/ranking/periods` (outcome-synced months only)  
+Sync district: `POST /api/ranking/outcome/district/sync?month=7&year=2026`  
+Sync block: `POST /api/ranking/outcome/block/sync?month=7&year=2026`  
+Auth to upstream: Basic (`USER_NAME_UPDSUPERADMIN` / `PASSWORD_UPDSU`)
 
-```text
-.../By DIvision/Jan/Data_Report_Requirement-18-8-2026_division.xlsx
-```
-
-- Inside workbook: tab **`composite_score`** + indicator tabs  
-- `geo_level=division` | `district` | `block`
+Legacy Excel import (`POST /api/ranking/import`) remains for historical files but is not served by ranking/dashboard plot endpoints.
 
 ## Endpoints
 
@@ -27,257 +29,163 @@ Auth: `Authorization: Bearer <token>`
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/ranking/import` | Upload ranking Excel (`file`) |
-| GET | `/api/ranking/dashboard?geo_level=division&period=2026-01` | Division map + ranking + indicators |
-| GET | `/api/ranking/dashboard?geo_level=district&period=2026-01` | District map + ranking + indicators |
-| GET | `/api/ranking/dashboard?geo_level=block&period=2026-01` | Block ranking + indicators |
-| GET | `/api/ranking/dashboard?geo_level=district&period=2026-02&div_code=14595` | Districts under Agra Division |
-| GET | `/api/ranking/dashboard?geo_level=block&period=2026-02&div_code=14595` | Blocks under Agra Division |
-| GET | `/api/ranking/dashboard?view=table&level=division&period=2026-01&table_mode=division&panel_tab=indicators&analytics_compare=timeperiod&analytics_mode=month` | Table view (Deep Dive) — same as health-ranking URL |
-| GET | `/api/ranking/deep-dive?view=division&period=2026-06` | Deep Dive: rankings + FY + trend + breakup |
+| POST | `/api/ranking/import` | Upload ranking Excel (`file`) — legacy only |
+| POST | `/api/ranking/outcome/district/sync` | Pull district rows from external API into cache |
+| POST | `/api/ranking/outcome/block/sync` | Pull block rows from `OUTCOME_BLOCK_API_URL` |
+| GET | `/api/ranking/dashboard?geo_level=division&period=2026-06` | Division map + ranking (**outcome rollup**) |
+| GET | `/api/ranking/dashboard?geo_level=district&period=2026-06` | District map + ranking (**outcome**) |
+| GET | `/api/ranking/dashboard?geo_level=block&period=2026-07` | Block map + ranking (**outcome**) |
+| GET | `/api/ranking/dashboard?geo_level=block&period=2026-07&district=Fatehpur` | Blocks under a district |
+| GET | `/api/ranking/dashboard?geo_level=block&period=2026-07&district=Lucknow&block_id=1329` | Full district block ranking; gauge + BY INDICATORS for that block |
+| GET | `/api/ranking/dashboard?view=table&level=division&period=2026-06&table_mode=division` | Table / Deep Dive |
+| GET | `/api/ranking/deep-dive?view=division&period=2026-06` | Deep Dive |
 | GET | `/api/ranking/geo-options?division=Lucknow%20Division` | Division / District / Block dropdowns |
-| GET | `/api/ranking/analytics?period_from=2026-05&period_to=2026-06&division=Lucknow%20Division&district=Lucknow` | Overall Composite Score analytics |
-| GET | `/api/ranking/executive-summary?period=2026-01&level=division` | Executive Summary (top/bottom, KPIs, MoM change) |
-| GET | `/api/ranking/periods` | Imported months |
+| GET | `/api/ranking/analytics?period_from=2026-05&period_to=2026-06` | Overall Composite Score analytics |
+| GET | `/api/ranking/trend?level=district&from_period=2026-01&to_period=2026-06&area_id=173` | Trend chart (primary + compare + UP avg) |
+| GET | `/api/ranking/trend?level=block&from_period=2026-01&to_period=2026-07&area_id=1329&block=Bakshi-Ka-Talab&compare_area_id=121&compare_name=Ambedkar+Nagar&indicator_code=IND004` | Block trend from `indicator_outcome_block` (compare may be block or district) |
+| GET | `/api/ranking/executive-summary?period=2026-06&level=division` | Executive Summary |
+| GET | `/api/ranking/periods` | Outcome-synced months only |
 
 Optional filters:
+- `filter` — `all` (default) | `aspirational` | `high_priority`  
+  Show All / Aspirational / High Priority toggles (map + table).  
+  Applies at **division** and **district** (divisions that contain matching districts; district list filtered).  
+  **Skipped at block** (single-block views). Ranks stay API/outcome ranks (not re-densified).
 - `div_code` — division master code (e.g. `14595` = Agra Division)
 - `division` — division name
-- `district` — district name (mainly for `geo_level=block`)
+- `district` / `dt_lgd` / `district_lgd` / `area_id` — district name or LGD (e.g. Lucknow = `162`)
+- `block` / `block_id` / `block_lgd` / `block_name` — selected block name or Block LGD (e.g. Bakshi-Ka-Talab = `1329`)
 - `parent_area_id` — alias for `div_code` when it matches `division.code`
+- `indicator_code` — `RANK_COMPOSITE` (default) or `IND001`…`IND037`
 
-`period` optional — latest imported month if omitted.
+Example (table + aspirational):  
+`/api/ranking/dashboard?view=table&level=division&geo_level=division&table_mode=division&period=2026-07&filter=aspirational`
 
-## Import
+`period` optional — latest outcome-synced month if omitted.
+
+### Block click (same pattern as district click)
+
+| Panel | Behavior |
+|--------|----------|
+| **BLOCK RANKING** | Full list for the district (unchanged) |
+| **Gauge + BY INDICATORS** | Values for the selected block only |
+| `summary_scope` | `"block"` when `block_id` / `block` is set; else `"district"` / `"state"` |
+| `selected_block` | `{ name, score, rank, … }` for the clicked row |
+| `district_overall_composite_score` | District avg (for comparison) when a block is selected |
+
+Example: `geo_level=block&period=2026-07&district=Lucknow&block_id=1329`
+→ `overall_composite_score` ≈ `0.49` (Bakshi-Ka-Talab), `ranking[]` still all Lucknow blocks.
+
+## Sync
 
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:3010/api/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"state.admin","password":"Pass@123"}' | jq -r .token)
 
-curl -X POST http://localhost:3010/api/ranking/import \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "file=@Data_Report_Requirement-18-8-2026_division.xlsx"
-```
+curl -X POST "http://localhost:3010/api/ranking/outcome/district/sync?month=6&year=2026" \
+  -H "Authorization: Bearer $TOKEN"
 
-## Dashboard (frontend)
-
-```bash
-curl "http://localhost:3010/api/ranking/dashboard?geo_level=division&period=2026-01" \
+curl -X POST "http://localhost:3010/api/ranking/outcome/block/sync?month=7&year=2026" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-District dashboard:
+Or from CLI:
 
 ```bash
-curl "http://localhost:3010/api/ranking/dashboard?geo_level=district&period=2026-01" \
-  -H "Authorization: Bearer $TOKEN"
+node scripts/syncBlockOutcomeFromApi.js 7 2026
 ```
 
-Block dashboard:
+## Dashboard examples
 
 ```bash
-curl "http://localhost:3010/api/ranking/dashboard?geo_level=block&period=2026-06" \
+curl "http://localhost:3010/api/ranking/dashboard?geo_level=division&period=2026-06" \
   -H "Authorization: Bearer $TOKEN"
 
-# optional district filter
-curl "http://localhost:3010/api/ranking/dashboard?geo_level=block&period=2026-06&district=Agra" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-Drill-down (frontend URL: `level=division&div_code=14595&table_mode=district&period=2026-02`):
-
-```bash
-# Preferred — table shows only Agra Division districts
-curl "http://localhost:3010/api/ranking/dashboard?level=division&table_mode=district&period=2026-02&div_code=14595" \
+curl "http://localhost:3010/api/ranking/dashboard?geo_level=district&period=2026-06" \
   -H "Authorization: Bearer $TOKEN"
 
-# Equivalent
-curl "http://localhost:3010/api/ranking/dashboard?geo_level=district&period=2026-02&div_code=14595" \
+# Districts under Agra Division
+curl "http://localhost:3010/api/ranking/dashboard?geo_level=district&period=2026-06&div_code=14595" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 Response notes:
-- `ranking[]` = rows for the **table** (districts when `table_mode=district` + `div_code`)
-- `selected_division` = clicked division summary (map popup)
-- `rank_trend` / `rank_change` for Trend column
-- If only `level=division&div_code=...` (no table_mode), also returns `child_ranking[]` (districts under that division)
-- SUMMARY tabs:
-  - **BY INDICATORS** → `indicators[]`
-  - **BY TYPE** → `by_type[]` (`COVERAGE` / `QUALITY` / `DATA QUALITY`)
-  - **BY DOMAIN** → `by_domain[]` (`ANTE NATAL`, `DELIVERY CARE`, …)
-  - Header score → `overall_composite_score` / `overall_composite_label`
+- `ranking[]` = rows for the table — **use `name`, `rank`, and `score` as-is** (do not re-join labels from geojson)
+- `ranking[].area_id` / `lgd_code` = Excel `DistrictLGDcode` (Pilibhit = **173**, not 151)
+- `ranking[].district_id` / `id` = master `district.id`
+- `ranking[].rank` = dense 1..n in response order; `state_rank` = statewide sheet rank
+- Rank gaps like 15→18 mean the UI filtered rows client-side — re-number with dense 1..n after filter
+- `source` = `indicator_outcome_api` or `indicator_outcome_cache`
+- `overall_composite_score` = AVG of district `index_outcome` (scoped)
+- SUMMARY: `indicators[]` / `by_type[]` / `by_domain[]`
 
-### Indicator click → ranking for that indicator
+**BY TYPE / BY DOMAIN** (map SUMMARY left panel):
+- Source of truth = Excel/`indicator` table: `indicator_type` + Excel `Domain` → `domain_label`
+- **Tab switch key:** `panel_tab`
+  - `panel_tab=indicators` → only `indicators[]`
+  - `panel_tab=type` → only `by_type[]` (COVERAGE / QUALITY / DATA QUALITY)
+  - `panel_tab=domain` → only `by_domain[]` (Excel domain labels: Maternal Health, Child Health, …)
+  - `panel_tab=all` → all three arrays
 
-On division / district (and block when data exists), pass `indicator_code`:
+**TABLE VIEW — INDICATOR BREAKUP** (right panel dropdown):
+- **Key:** `breakup_tab` (aliases: `breakup_group`, `group_by`)
+  - `breakup_tab=indicator` → `breakup_rows[]` = flat indicators (`indicator_breakup`)
+  - `breakup_tab=type` → `breakup_rows[]` = type groups (COVERAGE / QUALITY / DATA QUALITY)
+  - `breakup_tab=domain` → `breakup_rows[]` = Excel domain groups (`label` = Maternal Health, …) — **not** `delivery_care` / `ante_natal`
+- Always also returns `breakup_by_type[]`, `breakup_by_domain[]`, and flat `indicator_breakup[]` (each row has `domain` / `domain_label` = Excel Domain text)
+- Independent of `panel_tab`
 
 ```bash
-# Division-wise ranking for ANC indicator
-curl "http://localhost:3010/api/ranking/dashboard?geo_level=division&period=2026-01&indicator_code=RANK_ANC4_HB" \
-  -H "Authorization: Bearer $TOKEN"
-
-# District-wise for Full Immunization
-curl "http://localhost:3010/api/ranking/dashboard?geo_level=district&period=2026-01&indicator_code=RANK_FULL_IMM" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Block-wise (only if indicator imported at block level)
-curl "http://localhost:3010/api/ranking/dashboard?geo_level=block&district=Unnao&period=2026-01&indicator_code=RANK_ANC4_HB" \
+curl "http://localhost:3010/api/ranking/dashboard?view=table&level=district&period=2024-07&breakup_tab=domain" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Response:
-- `ranking[]` sorted by that indicator’s rank/score
-- `selected_indicator` (`code`, `name`, `unit`, `average`, `available`)
-- `indicators[].selected` marks the active indicator
-- `overall_composite_score` stays the composite header score
-- Default (omit param) = `RANK_COMPOSITE`
+- Dual-month bars: `score` / `prev_score`, `bar_pct` / `prev_bar_pct`
+- Default indicator = `RANK_COMPOSITE`
 
-## Table view (frontend `health-ranking?view=table…`)
-
-Pass the same query string the UI uses:
+### Indicator click
 
 ```bash
-curl "http://localhost:3010/api/ranking/dashboard?view=table&level=division&period=2026-01&panel_tab=indicators&table_mode=division&labels=1&analytics_compare=timeperiod&analytics_mode=month" \
+curl "http://localhost:3010/api/ranking/dashboard?geo_level=district&period=2026-06&indicator_code=IND004" \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-| URL param | Effect |
-|-----------|--------|
-| `view=table` | Deep Dive / table payload (not map) |
-| `level` / `table_mode` | `division` or `district` ranking rows |
-| `period` | Selected month |
-| `panel_tab=indicators` | `indicators[]` + `indicator_breakup[]` |
-| `labels=1` | Echoed as `labels: true` |
-| `analytics_compare=timeperiod` | Month columns in `analytics.periods` + `period_values` per row |
-| `analytics_mode=month` | Monthly series (use `fy` for FY-window trend) |
+See also: executive summary, analytics, deep-dive endpoints in the table above (all outcome-backed for division/district).
 
-Response: `summary`, `state_row`, `rankings` / `ranking`, `indicators`, `indicator_breakup`, `analytics`.
+## Trend / Compare (`GET /api/ranking/trend`)
 
-## Executive Summary
+Powers **VIEW BY: Trend** (primary area + optional compare + UP average line).
 
-Division/district snapshot: Top/Bottom 3, narrative, key indicators, map ranks, MoM change charts.
-
-```bash
-curl "http://localhost:3010/api/ranking/executive-summary?period=2026-01&level=division" \
-  -H "Authorization: Bearer $TOKEN"
+```http
+GET /api/ranking/trend?level=district&from_period=2026-01&to_period=2026-06&area_id=173&area_name=Pilibhit
+GET /api/ranking/trend?level=division&from_period=2026-01&to_period=2026-06&area_name=Chitrakoot&compare_name=Gorakhpur
+GET /api/ranking/dashboard?view=trend&level=district&area_id=173&months=6
 ```
 
-| Field | UI |
-|-------|-----|
-| `top_performers` / `bottom_performers` | TOP 3 / BOTTOM 3 lists |
-| `narrative` / `narrative_badge` | Center summary text + month badge |
-| `key_indicators.positive` / `.negative` | Thumbs-up / thumbs-down KPI cards |
-| `map.ranking` | Heatmap division scores + bands |
-| `performance_change` | Right panel rank + 3-month history + MoM `change` |
-| `highest_increase` / `lowest_decrease` | Bottom bar charts (prev vs current) |
-| `history_legend` / `compare_chart_legend` | Colors for NOV/DEC/JAN style legends |
-
-Also: `GET /api/ranking/dashboard?view=executive&period=2026-01&level=division`
-
-## Overall Composite Score analytics
-
-Matches UI: **By Timeperiod** + Division → District → Block + UP Average / Best Performance.
-
-### Frontend URL (preferred)
-
-Same query string as `health-ranking?view=analytics…`:
-
-```bash
-curl "http://localhost:3010/api/ranking/dashboard?view=analytics&level=division&period=2026-06&panel_tab=indicators&table_mode=district&labels=1&analytics_compare=timeperiod&analytics_mode=quarter&area_id=auraiya__erwa-katra&district_id=auraiya&block_id=auraiya__erwa-katra&parent_area_id=auraiya&analytics_period=2026-06&analytics_from=2026-Q1&analytics_to=2026-Q1" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-| URL param | Meaning |
-|-----------|---------|
-| `view=analytics` | Overall Composite Score analytics |
-| `analytics_mode=quarter\|month` | Axis mode |
-| `analytics_from` / `analytics_to` | `2026-Q1` (Indian FY Q1 = Apr–Jun) or `YYYY-MM` |
-| `district_id` | slug e.g. `auraiya` |
-| `block_id` / `area_id` | `district__block` slug e.g. `auraiya__erwa-katra` |
-| `parent_area_id` | district slug (analytics) or numeric `div_code` (map) |
-| `panel_tab` | `indicators` / domain / type |
-| `labels=1` | echoed |
-
-Also: `GET /api/ranking/analytics` with the same params.
-
-### Geo dropdowns
-
-```bash
-curl "http://localhost:3010/api/ranking/geo-options?division=Lucknow%20Division&district=Lucknow" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Analytics (custom months)
-
-```bash
-curl "http://localhost:3010/api/ranking/analytics?period_from=2026-05&period_to=2026-06&division=Lucknow%20Division&district=Lucknow&block=all&compare_up_avg=1&compare_best=1" \
-  -H "Authorization: Bearer $TOKEN"
-```
-
-### Analytics (quarters — Indian FY)
-
-```bash
-curl "http://localhost:3010/api/ranking/analytics?quarter_from=2026-Q1&quarter_to=2026-Q1&district_id=auraiya&block_id=auraiya__erwa-katra" \
-  -H "Authorization: Bearer $TOKEN"
-```
+| Param | Meaning |
+|--------|---------|
+| `level` / `geo_level` | `district` (default) or `division` |
+| `from_period` / `to_period` | `YYYY-MM` range (aliases: `period_from` / `period_to`). If `to_period` is before the latest **API-synced** month, the axis is extended automatically (e.g. FE sends `2026-06` but July is synced → chart includes **Jul '26**) |
+| `months` | If from/to omitted, last N synced outcome months |
+| `area_id` | District **LGD** (Pilibhit=`173`) or division code |
+| `area_name` | District / division name |
+| `compare_area_id` / `compare_name` / `compare_with` | Second series for Compare with |
+| `compare_up_avg` | `0` to hide UP line (default on) |
+| `indicator_code` | `RANK_COMPOSITE` (default) or `IND001`… |
 
 Response highlights:
-- `breadcrumb` / `breadcrumb_display` / `composite.score` + `composite.series`
-- `indicators[]` — `from_value` / `to_value` (bar ends) + `series` (sparkline) + optional `up_avg_series` / `best_perf_series`
-- `indicators[].chart` / `composite.chart` — trend panel ready:
-  - `bars` / `points[].bar` → orange selected-geo bars
-  - `up_avg` / `points[].up_avg` → blue **UP Average** line
-  - `best_perf` / `points[].best_perf` → grey **Best Performance** band
-  - `categories` → `["Apr 26","May 26","Jun 26"]`
-- `by_domain` / `by_type` — All Indicators / By Domain / By Type tabs
-- `missing_months` — requested months not yet imported (e.g. Jul 2026)
+- `primary` / `compare` / `up_avg` — each has `series[]` with `value` (raw) and `display_value` (same rounding as ranking table: composite **0.55**, percent **20**)
+- `chart.series[].data` — plot values on the **same scale as ranking** (composite 0–1, percent 0–100)
+- `chart.y_min` / `y_max` / `y_label` / `y_unit` — change with `indicator_code` (composite → 0–1 “Overall Composite Score”; `IND001` → 0–100 indicator name)
+- `legend[].latest_value` — use for tooltip chips (matches ranking score)
+- `compare_options` — dropdown list for Compare with
+- Data source: `indicator_outcome_district` only (same cache as map ranking)
 
-## Deep Dive (By Division / By District table + indicator breakup)
+```http
+# Overall composite (matches DISTRICT RANKING scores)
+GET /api/ranking/trend?level=district&area_id=173&from_period=2026-01&to_period=2026-06&compare_name=Rampur
 
-```bash
-# By Division — Composite Score — Jun 2026
-curl "http://localhost:3010/api/ranking/deep-dive?view=division&period=2026-06&indicator_code=RANK_COMPOSITE&filter=all" \
-  -H "Authorization: Bearer $TOKEN"
-
-# By District
-curl "http://localhost:3010/api/ranking/deep-dive?view=district&period=2026-06&indicator_code=RANK_COMPOSITE" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Indicator breakup scoped to a division
-curl "http://localhost:3010/api/ranking/deep-dive?view=division&period=2026-06&division=Meerut%20Division" \
-  -H "Authorization: Bearer $TOKEN"
+# Selected indicator — Y-axis becomes that indicator’s unit/scale
+GET /api/ranking/trend?level=district&area_id=173&indicator_code=IND001&from_period=2026-01&to_period=2026-06
 ```
-
-Response highlights:
-- `summary` — total districts, top/lowest, average + change
-- `state_row` — Uttar Pradesh aggregate
-- `rankings[]` — RANK / MONTHLY / FY / `trend_series` (sparkline points); hierarchy:
-  - **By Division:** division → `children[]` districts → each district `children[]` **blocks**
-  - **By District:** district → `children[]` blocks
-- `hierarchy` — e.g. `["division","district","block"]`; each row has `geo_level`, `expandable`, `child_count`
-- `indicator_breakup[]` — INDICATOR / UP AVG / BEST PERF / MONTHLY / FY for `breakup_scope`
-- `indicator_options[]` — dropdown list
-- `filter` — `all` | `aspirational` | `high_priority`
-
-FY = average of available months from Indian FY start (Apr) through selected period.
-
-
-Excel sometimes uses non-master spellings. Parser + DB normalize these to master names:
-
-| Excel | Master |
-|-------|--------|
-| Bagpat | Baghpat |
-| Budaun | Badaun |
-| Unnav | Unnao |
-| Shrawasti | Shravasti |
-| Kanpur Division | Kanpur Nagar Division |
-| Alligarh Division | Aligarh Division |
-
-Repair existing rows: `node scripts/fixRankingGeoAliases.js`
-
-For `ranking[]` trend:
-- `prev_rank` (previous period composite rank; null if not available)
-- `rank_change` (current_rank - prev_rank in rank number; null if not available)
-- `rank_trend` (`up`/`down`/`same`; null if not available)
-Without import: `has_data: false`.

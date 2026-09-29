@@ -31,7 +31,7 @@ async function main() {
   // Block sheet: Block | Block LGD | values (District hidden)
   await fillAndWrite(
     {
-      indicatorCode: 'IND_ANC_1ST_TRIMESTER_PCT',
+      indicatorCode: 'IND002',
       period: '2026-05',
       level: 'block',
       sourceCode: 'ekavach',
@@ -54,7 +54,7 @@ async function main() {
   // Facility sheet: Facility Name | HFR | values (District+Block hidden)
   await fillAndWrite(
     {
-      indicatorCode: 'IND_CHC_FRU_CSECTION_PCT',
+      indicatorCode: 'IND001',
       period: '2026-05',
       level: 'facility',
       sourceCode: 'hmis',
@@ -76,7 +76,7 @@ async function main() {
   // District sheet: District | District LGD | values
   await fillAndWrite(
     {
-      indicatorCode: 'IND_ANC_1ST_TRIMESTER_PCT',
+      indicatorCode: 'IND002',
       period: '2026-05',
       level: 'district',
       sourceCode: 'ekavach',

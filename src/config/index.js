@@ -14,4 +14,10 @@ module.exports = {
     secret: process.env.JWT_SECRET || 'dev-secret-change-me',
     expiresIn: process.env.JWT_EXPIRES_IN || '8h',
   },
+  outcome: {
+    enabled: String(process.env.OUTCOME_API_ENABLED || 'true').toLowerCase() !== 'false',
+    districtUrl: process.env.OUTCOME_DISTRICT_API_URL || '',
+    timeoutMs: Number(process.env.OUTCOME_API_TIMEOUT_MS) || 8000,
+    apiKey: process.env.OUTCOME_API_KEY || '',
+  },
 };

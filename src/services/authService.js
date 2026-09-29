@@ -3,7 +3,10 @@ const jwt = require('jsonwebtoken');
 const { query } = require('../db/pool');
 const config = require('../config');
 
-const STATE_ROLES = new Set(['state_admin']);
+/** Statewide dashboard view (not user-management). */
+const STATEWIDE_ROLES = new Set(['state_admin', 'system_admin']);
+/** Only system_admin may manage users from the admin panel. */
+const SYSTEM_ADMIN_ROLES = new Set(['system_admin']);
 
 async function findUserByUsername(username) {
   const { rows } = await query(
@@ -69,14 +72,18 @@ async function getUserGeoAssignments(userId) {
  */
 function buildUserScope(roles, geoAssignments = []) {
   const roleCodes = (roles || []).map((r) => String(r.code || r).toLowerCase());
-  const isStateAdmin = roleCodes.some((c) => STATE_ROLES.has(c));
+  const isSystemAdmin = roleCodes.some((c) => SYSTEM_ADMIN_ROLES.has(c));
+  const isStateAdmin = roleCodes.some((c) => c === 'state_admin');
+  const isStatewide = roleCodes.some((c) => STATEWIDE_ROLES.has(c));
   const primary = geoAssignments[0] || null;
 
-  if (isStateAdmin || !primary) {
+  if (isStatewide || !primary) {
     return {
       level: 'state',
       is_state_admin: isStateAdmin,
-      can_upload: isStateAdmin,
+      is_system_admin: isSystemAdmin,
+      can_manage_users: isSystemAdmin,
+      can_upload: isStateAdmin || isSystemAdmin,
       can_view_statewide: true,
       division_id: null,
       division_name: null,
@@ -117,25 +124,34 @@ function buildUserScope(roles, geoAssignments = []) {
     if (primary.division_name) default_filters.division = primary.division_name;
     if (divisionId != null) default_filters.division_id = String(divisionId);
   } else if (level === 'district') {
-    default_filters.level = 'district';
-    default_filters.table_mode = 'district';
+    // District users land on blocks under their district
+    default_filters.level = 'block';
+    default_filters.table_mode = 'block';
     if (primary.district_name) default_filters.district = primary.district_name;
     if (districtId != null) default_filters.district_id = String(districtId);
+    if (primary.district_lgd != null) {
+      default_filters.district_lgd = String(primary.district_lgd);
+      default_filters.dt_lgd = String(primary.district_lgd);
+    }
     if (primary.division_code) default_filters.div_code = String(primary.division_code);
+    if (primary.division_name) default_filters.division = primary.division_name;
     if (divisionId != null) default_filters.division_id = String(divisionId);
   } else if (level === 'block') {
     default_filters.level = 'block';
-    default_filters.table_mode = 'district';
+    default_filters.table_mode = 'block';
     if (primary.district_name) default_filters.district = primary.district_name;
     if (primary.block_name) default_filters.block = primary.block_name;
     if (districtId != null) default_filters.district_id = String(districtId);
     if (blockId != null) default_filters.block_id = String(blockId);
+    if (primary.division_code) default_filters.div_code = String(primary.division_code);
     if (divisionId != null) default_filters.division_id = String(divisionId);
   }
 
   return {
     level,
     is_state_admin: false,
+    is_system_admin: false,
+    can_manage_users: false,
     can_upload: false,
     can_view_statewide: false,
     division_id: divisionId,
@@ -285,7 +301,7 @@ async function changePassword(userId, currentPassword, newPassword) {
   return { message: 'Password updated successfully' };
 }
 
-/** Demo accounts for integration (no passwords in response). */
+/** Seeded accounts for integration (no passwords in response). */
 async function listDemoAccounts() {
   const { rows } = await query(
     `
@@ -306,12 +322,11 @@ async function listDemoAccounts() {
     LEFT JOIN district d ON d.id = uga.district_id
     LEFT JOIN block b ON b.id = uga.block_id
     WHERE u.is_active = TRUE
+      AND lower(u.username) IN ('sysadmin', 'state.admin')
     ORDER BY
       CASE r.code
-        WHEN 'state_admin' THEN 0
-        WHEN 'division_viewer' THEN 1
-        WHEN 'district_viewer' THEN 2
-        WHEN 'block_viewer' THEN 3
+        WHEN 'system_admin' THEN 0
+        WHEN 'state_admin' THEN 1
         ELSE 9
       END,
       u.username

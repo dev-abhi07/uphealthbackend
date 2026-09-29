@@ -27,8 +27,8 @@ function resolveAllowedLevels(template) {
 }
 
 const TEMPLATES = {
-  IND_CHC_FRU_CSECTION_PCT: {
-    code: "IND_CHC_FRU_CSECTION_PCT",
+  IND001: {
+    code: "IND001",
     name: "% of CHC-FRUs conducted >=10 C-section per month against designated CHC-FRUs",
     dataSources: ["hmis"],
     dataSourceLabel: "HMIS",
@@ -43,8 +43,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_ANC_1ST_TRIMESTER_PCT: {
-    code: "IND_ANC_1ST_TRIMESTER_PCT",
+  IND002: {
+    code: "IND002",
     name: "% of PW registered for ANC within the first trimester against total PW registered for ANC",
     dataSources: ["ekavach"],
     dataSourceLabel: "e-kavach",
@@ -64,9 +64,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_ANC_4PLUS_PCT: {
-    code: "IND_ANC_4PLUS_PCT",
-    name: "PW received 4 or more ANC with Hb testing",
+  IND003: {
+    code: "IND003",
+    name: "% of PW receiving 4 or more antenatal care check-ups against total PW registered for ANC",
     dataSources: ["ekavach","dgfw"],
     dataSourceLabel: "e-kavach / DGFW",
     defaultLevel: "block",
@@ -90,8 +90,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_INSTITUTIONAL_DELIVERY_PCT: {
-    code: "IND_INSTITUTIONAL_DELIVERY_PCT",
+  IND004: {
+    code: "IND004",
     name: "Percentage of pregnant women delivered in institution against estimated delivery",
     dataSources: ["mantra","hmis","dgfw"],
     dataSourceLabel: "Mantra (public), HMIS (private), DGFW estimates",
@@ -116,8 +116,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_NORMAL_DEL_STAY48_PCT: {
-    code: "IND_NORMAL_DEL_STAY48_PCT",
+  IND005: {
+    code: "IND005",
     name: "% of facilities where average duration of stay is more than 48 hours for normal delivery",
     dataSources: ["mantra"],
     dataSourceLabel: "Mantra",
@@ -137,8 +137,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_HRP_MANAGED_PCT: {
-    code: "IND_HRP_MANAGED_PCT",
+  IND006: {
+    code: "IND006",
     name: "% of HRP managed against identified",
     dataSources: ["hmis"],
     dataSourceLabel: "HMIS",
@@ -188,9 +188,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_VHND_PCT: {
-    code: "IND_VHND_PCT",
-    name: "% of U/VHND sessions conducted against planned in the last month",
+  IND007: {
+    code: "IND007",
+    name: "% of U/VHND sessions conducted against projected population per thousand for the month",
     dataSources: ["ekavach","dgfw"],
     dataSourceLabel: "e-kavach / DGFW",
     defaultLevel: "block",
@@ -209,8 +209,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_BIRTH_REG_PCT: {
-    code: "IND_BIRTH_REG_PCT",
+  IND008: {
+    code: "IND008",
     name: "% of births registered against estimated live births (cumulative)",
     dataSources: ["crs","dgfw"],
     dataSourceLabel: "CRS / DGFW",
@@ -230,9 +230,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_ANM_LOGIN_PCT: {
-    code: "IND_ANM_LOGIN_PCT",
-    name: "% of ANMs who logged into eKavach in the last 30 days, against total active ANMs",
+  IND009: {
+    code: "IND009",
+    name: "% of ANMs who logged into eKavach in the last 30 days, against the total number of active ANMs on eKavach",
     dataSources: ["ekavach"],
     dataSourceLabel: "e-kavach",
     defaultLevel: "district",
@@ -251,8 +251,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_PERINATAL_DEATH_PCT: {
-    code: "IND_PERINATAL_DEATH_PCT",
+  IND010: {
+    code: "IND010",
     name: "% of perinatal deaths before discharge against institutional birth (negative indicator)",
     dataSources: ["hmis"],
     dataSourceLabel: "HMIS",
@@ -287,8 +287,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_LBW_PCT: {
-    code: "IND_LBW_PCT",
+  IND011: {
+    code: "IND011",
     name: "Percentage of low-birth weight babies (less than 2500g) (negative indicator)",
     dataSources: ["mantra"],
     dataSourceLabel: "Mantra",
@@ -308,9 +308,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_NBSU_BOR: {
-    code: "IND_NBSU_BOR",
-    name: "Average bed occupancy rate (BoR) per NBSU per month",
+  IND012: {
+    code: "IND012",
+    name: "Average bed occupancy rate(BoR) per NBSU per month",
     dataSources: ["fbnc"],
     dataSourceLabel: "FBNC",
     defaultLevel: "district",
@@ -329,8 +329,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_SNCU_DISCHARGE_PCT: {
-    code: "IND_SNCU_DISCHARGE_PCT",
+  IND013: {
+    code: "IND013",
     name: "% of newborns discharged from SNCUs against admissions, excluding those still admitted",
     dataSources: ["fbnc"],
     dataSourceLabel: "FBNC",
@@ -350,8 +350,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_HBNC_SICK_REFERRAL_PCT: {
-    code: "IND_HBNC_SICK_REFERRAL_PCT",
+  IND014: {
+    code: "IND014",
     name: "% of new born identified sick during HBNC visit referred to the facility by ASHA against HBNC visit (6/7 visit)",
     dataSources: ["hmis"],
     dataSourceLabel: "HMIS",
@@ -371,8 +371,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_FULL_IMMUNIZATION_PCT: {
-    code: "IND_FULL_IMMUNIZATION_PCT",
+  IND015: {
+    code: "IND015",
     name: "% of children full immunized against estimated infant",
     dataSources: ["uwin","dgfw"],
     dataSourceLabel: "U-WIN / DGFW",
@@ -392,8 +392,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_MR2_PCT: {
-    code: "IND_MR2_PCT",
+  IND016: {
+    code: "IND016",
     name: "% of children received MR 2 dose against estimated children aged 16 to 24 months",
     dataSources: ["uwin","dgfw"],
     dataSourceLabel: "U-WIN / DGFW",
@@ -413,8 +413,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_ASHA_AVG_INCENTIVE: {
-    code: "IND_ASHA_AVG_INCENTIVE",
+  IND017: {
+    code: "IND017",
     name: "Average incentives paid to ASHA on monthly basis",
     dataSources: ["ccpm","bcpm"],
     dataSourceLabel: "CCPM / BCPM",
@@ -444,8 +444,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_FUNCTIONAL_AAM_PCT: {
-    code: "IND_FUNCTIONAL_AAM_PCT",
+  IND018: {
+    code: "IND018",
     name: "% of functional AAM against designated",
     dataSources: ["aam","esanjeevani","dvdms"],
     dataSourceLabel: "AAM / e-Sanjeevani / DVDMS",
@@ -485,8 +485,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_UDSP_REPORTING_PCT: {
-    code: "IND_UDSP_REPORTING_PCT",
+  IND019: {
+    code: "IND019",
     name: "Percentage of health facilities reporting weekly on UDSP portal",
     dataSources: ["udsp"],
     dataSourceLabel: "UDSP",
@@ -506,8 +506,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_TB_NOTIFICATION_RATE: {
-    code: "IND_TB_NOTIFICATION_RATE",
+  IND020: {
+    code: "IND020",
     name: "Total case notification rate of TB against target",
     dataSources: ["nikshay"],
     dataSourceLabel: "Nikshay",
@@ -527,8 +527,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_TB_SUCCESS_PCT: {
-    code: "IND_TB_SUCCESS_PCT",
+  IND021: {
+    code: "IND021",
     name: "% of Tuberculosis (TB) cases treated successfully against TB cases notified one year ago",
     dataSources: ["nikshay"],
     dataSourceLabel: "Nikshay",
@@ -548,9 +548,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_DRTB_SUCCESS_PCT: {
-    code: "IND_DRTB_SUCCESS_PCT",
-    name: "Proportion of DRTB cases treated successfully against DR-TB cases notified two years ago",
+  IND022: {
+    code: "IND022",
+    name: "Proportion of Drug Resistant Tuberculosis (DRTB) cases treated successfully against Drug Resistant TB cases notified in the “current cohort” two years ago",
     dataSources: ["nikshay"],
     dataSourceLabel: "Nikshay",
     defaultLevel: "block",
@@ -569,8 +569,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_HTN_SCREEN_30PLUS_PCT: {
-    code: "IND_HTN_SCREEN_30PLUS_PCT",
+  IND023: {
+    code: "IND023",
     name: "% of population aged 30+ screened for hypertension",
     dataSources: ["ekavach"],
     dataSourceLabel: "e-kavach",
@@ -590,9 +590,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_DIABETES_SCREEN_30PLUS_PCT: {
-    code: "IND_DIABETES_SCREEN_30PLUS_PCT",
-    name: "% of population aged 30+ screened for diabetes",
+  IND024: {
+    code: "IND024",
+    name: "% of population aged 30+screened for diabetes",
     dataSources: ["ekavach"],
     dataSourceLabel: "e-kavach",
     defaultLevel: "block",
@@ -611,9 +611,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_NQAS_CERTIFIED_PCT: {
-    code: "IND_NQAS_CERTIFIED_PCT",
-    name: "% of public health facilities certified with NQAS",
+  IND025: {
+    code: "IND025",
+    name: "% of public health facilities certified with National Quality Assurance Standards (NQAS)",
     dataSources: ["state_report","uprsk"],
     dataSourceLabel: "State report / UPKSK",
     defaultLevel: "facility",
@@ -632,9 +632,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_UPKSK_ALL_SERVICES_PCT: {
-    code: "IND_UPKSK_ALL_SERVICES_PCT",
-    name: "% of facilities (DH/CHC/PHC) conducting all services as per UPKSK exception report",
+  IND026: {
+    code: "IND026",
+    name: "% of facilities (DH/CHC/PHC) conducting all services as per norms defined in UPKSK exception report against the number of facilities",
     dataSources: ["hmis","uprsk"],
     dataSourceLabel: "HMIS / UPKSK",
     defaultLevel: "facility",
@@ -653,8 +653,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_EDL_DRUG_AVAIL_PCT: {
-    code: "IND_EDL_DRUG_AVAIL_PCT",
+  IND027: {
+    code: "IND027",
     name: "Average percentage availability of drugs against RC available for EDL per facility",
     dataSources: ["dvdms","uprsk"],
     dataSourceLabel: "DVDMS / UPKSK",
@@ -679,9 +679,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_FAMS_BUDGET_UTIL_PCT: {
-    code: "IND_FAMS_BUDGET_UTIL_PCT",
-    name: "% of Budget utilized against limit assigned (cumulative) - FAMS",
+  IND028: {
+    code: "IND028",
+    name: "% of Budget utilized against limit assigned (cumulative) - NHM",
     dataSources: ["fams"],
     dataSourceLabel: "FAMS",
     defaultLevel: "district",
@@ -700,8 +700,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_GOLDEN_CARD_PCT: {
-    code: "IND_GOLDEN_CARD_PCT",
+  IND029: {
+    code: "IND029",
     name: "% of Golden cards distributed against eligible families",
     dataSources: ["pmjay"],
     dataSourceLabel: "PMJAY",
@@ -721,9 +721,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_KOSHWANI_BUDGET_UTIL_PCT: {
-    code: "IND_KOSHWANI_BUDGET_UTIL_PCT",
-    name: "% of Budget utilized against limit assigned (cumulative) - Koshwani",
+  IND030: {
+    code: "IND030",
+    name: "% of Budget utilized against limit assigned (cumulative) - DGFW, DGMH, training",
     dataSources: ["koshwani"],
     dataSourceLabel: "Koshwani",
     defaultLevel: "district",
@@ -742,9 +742,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_ABHA_VS_ENUMERATED_PCT: {
-    code: "IND_ABHA_VS_ENUMERATED_PCT",
-    name: "% of ABHA seeded/linked/generated against population enumerated in eKavach",
+  IND031: {
+    code: "IND031",
+    name: "% of ABHA seeded/ linked/ generated against the population enumerated in eKavach",
     dataSources: ["ekavach"],
     dataSourceLabel: "e-kavach",
     defaultLevel: "block",
@@ -763,8 +763,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_ABHA_NEW_REG_PCT: {
-    code: "IND_ABHA_NEW_REG_PCT",
+  IND032: {
+    code: "IND032",
     name: "% of ABHA-based new registrations in e-kavach against total new registrations",
     dataSources: ["ekavach"],
     dataSourceLabel: "e-kavach",
@@ -784,8 +784,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_HIS_ACTIVE_FACILITY_PCT: {
-    code: "IND_HIS_ACTIVE_FACILITY_PCT",
+  IND033: {
+    code: "IND033",
     name: "% of facilities where HIS is active against total facilities in the district",
     dataSources: ["his","uprsk"],
     dataSourceLabel: "HIS / UPKSK",
@@ -805,9 +805,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_HIS_OPD_VS_HMIS_PCT: {
-    code: "IND_HIS_OPD_VS_HMIS_PCT",
-    name: "% of OPDs reported in HIS against total OPD reported in HMIS",
+  IND034: {
+    code: "IND034",
+    name: "% of OPDs reported in HIS against the total OPD reported in HMIS",
     dataSources: ["his","hmis"],
     dataSourceLabel: "HIS / HMIS",
     defaultLevel: "district",
@@ -826,8 +826,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_ABHA_OPD_HIS_PCT: {
-    code: "IND_ABHA_OPD_HIS_PCT",
+  IND035: {
+    code: "IND035",
     name: "% of ABHA-based registration against total OPD reported in HIS",
     dataSources: ["his"],
     dataSourceLabel: "HIS",
@@ -847,9 +847,9 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_ABHA_EHR_LINK_PCT: {
-    code: "IND_ABHA_EHR_LINK_PCT",
-    name: "% of unique ABHA linked with EHR against ABHA based OPD registration in HIS",
+  IND036: {
+    code: "IND036",
+    name: "% of unique ABHA linked with EHR against ABHA based OPD registration in HIS in the month",
     dataSources: ["his"],
     dataSourceLabel: "HIS",
     defaultLevel: "district",
@@ -868,8 +868,8 @@ const TEMPLATES = {
       }
     ],
   },
-  IND_PMJAY_ABDM_HIS_PCT: {
-    code: "IND_PMJAY_ABDM_HIS_PCT",
+  IND037: {
+    code: "IND037",
     name: "% of PMJAY empanelled facilities that have adopted ABDM enabled HIS",
     dataSources: ["his","pmjay"],
     dataSourceLabel: "HIS / PMJAY",
@@ -934,7 +934,17 @@ function listTemplates() {
 }
 
 function getTemplate(code) {
-  return TEMPLATES[code] || null;
+  if (!code) return null;
+  const raw = String(code).trim().toUpperCase();
+  if (TEMPLATES[raw]) return TEMPLATES[raw];
+  try {
+    const { normalizeIndicatorCode } = require('../indicators/indicatorCodes');
+    const norm = normalizeIndicatorCode(raw);
+    if (norm && TEMPLATES[norm]) return TEMPLATES[norm];
+  } catch (_) {
+    /* optional */
+  }
+  return null;
 }
 
 function resolveTemplateByIndicatorName(name) {

@@ -1,8 +1,13 @@
 /**
  * Executive Summary bottom sections: Insights, Rank Movement, Indicator matrix.
+ * Data from indicator_outcome_* (division rolled up from district).
  */
 const { query } = require('../db/pool');
-const { LOWER_IS_BETTER } = require('./rankingExecutiveSummaryService');
+const {
+  resolveOutcomePeriod,
+  loadCompositeByPeriod: loadOutcomeComposite,
+  loadIndicatorByPeriod,
+} = require('../outcome/outcomeRankingQueries');
 
 function num(v) {
   if (v === null || v === undefined) return null;
@@ -72,45 +77,16 @@ function rankTierColor(rank, total = 18) {
 }
 
 async function resolvePeriod(period) {
-  if (period) {
-    const { rows } = await query(
-      `SELECT * FROM ranking_period WHERE label = $1 OR display ILIKE $1 LIMIT 1`,
-      [period]
-    );
-    return rows[0] || null;
-  }
-  const { rows } = await query(
-    `
-    SELECT p.* FROM ranking_period p
-    JOIN ranking_value v ON v.period_id = p.id
-    WHERE v.geo_level = 'division'
-    GROUP BY p.id
-    ORDER BY p.label DESC
-    LIMIT 1
-    `
-  );
-  return rows[0] || null;
+  return resolveOutcomePeriod(period);
 }
 
 async function loadCompositeByPeriod(geoLevel, periodLabels) {
-  if (!periodLabels.length) return [];
-  const { rows } = await query(
-    `
-    SELECT p.label AS period, v.geo_name, v.value::float AS value, v.rank
-    FROM ranking_value v
-    JOIN ranking_indicator i ON i.id = v.indicator_id
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE i.code = 'RANK_COMPOSITE'
-      AND v.geo_level = $1
-      AND p.label = ANY($2::text[])
-    `,
-    [geoLevel, periodLabels]
-  );
+  const rows = await loadOutcomeComposite(geoLevel, periodLabels);
   return rows.map((r) => ({
     period: r.period,
-    name: r.geo_name,
-    value: num(r.value),
-    rank: r.rank != null ? Number(r.rank) : null,
+    name: r.name,
+    value: r.value,
+    rank: r.rank,
   }));
 }
 
@@ -192,41 +168,41 @@ function buildRankInsights(columns, periodKeys, levelLabel) {
 async function loadIndicatorMoM(geoLevel, currentLabel, prevLabel) {
   if (!currentLabel) return [];
   const labels = prevLabel ? [currentLabel, prevLabel] : [currentLabel];
-  const { rows } = await query(
+  const { rows: inds } = await query(
     `
-    SELECT p.label AS period, v.geo_name, i.code, i.short_name, i.name, i.unit,
-           v.value::float AS value
-    FROM ranking_value v
-    JOIN ranking_indicator i ON i.id = v.indicator_id
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE v.geo_level = $1
-      AND p.label = ANY($2::text[])
-      AND i.is_active = TRUE
-      AND i.is_composite = FALSE
-      AND i.code <> 'RANK_ASHA_EXP'
-    `,
-    [geoLevel, labels]
+    SELECT code, short_name, name, unit, is_negative, sno
+    FROM indicator
+    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
+    ORDER BY sno NULLS LAST, code
+    `
   );
 
   const byKey = new Map();
-  rows.forEach((r) => {
-    const key = `${geoKey(r.geo_name)}::${r.code}`;
-    if (!byKey.has(key)) {
-      byKey.set(key, {
-        areaId: geoKey(r.geo_name),
-        areaName: shortGeoName(r.geo_name),
-        code: r.code,
-        indicatorName: (r.short_name || r.name || r.code).toUpperCase(),
-        lowerIsBetter: LOWER_IS_BETTER.has(r.code),
-        current: null,
-        previous: null,
-      });
+  for (const ind of inds) {
+    const rows = await loadIndicatorByPeriod({
+      geoLevel,
+      indicatorCode: ind.code,
+      periodLabels: labels,
+      isNegative: !!ind.is_negative,
+    });
+    for (const r of rows) {
+      const key = `${geoKey(r.name)}::${ind.code}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          areaId: geoKey(r.name),
+          areaName: shortGeoName(r.name),
+          code: ind.code,
+          indicatorName: (ind.short_name || ind.name || ind.code).toUpperCase(),
+          lowerIsBetter: !!ind.is_negative,
+          current: null,
+          previous: null,
+        });
+      }
+      const row = byKey.get(key);
+      if (r.period === currentLabel) row.current = r.value;
+      if (r.period === prevLabel) row.previous = r.value;
     }
-    const row = byKey.get(key);
-    const val = num(r.value);
-    if (r.period === currentLabel) row.current = val;
-    if (r.period === prevLabel) row.previous = val;
-  });
+  }
 
   return [...byKey.values()].filter((r) => r.current != null && r.previous != null);
 }
@@ -322,7 +298,7 @@ async function getRankInsights({ period, mode = 'division' } = {}) {
   if (!periodRow) {
     return {
       has_data: false,
-      message: 'No ranking periods imported yet',
+      message: 'No outcome periods synced yet',
       period: period || null,
       mode: geoLevel,
     };
@@ -365,22 +341,57 @@ async function getRankInsights({ period, mode = 'division' } = {}) {
 
 async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
   const labels = prevLabel ? [currentLabel, prevLabel] : [currentLabel];
-  const { rows } = await query(
+  const out = [];
+
+  const composite = await loadOutcomeComposite(geoLevel, labels);
+  for (const r of composite) {
+    out.push({
+      period: r.period,
+      geo_name: r.name,
+      rank: r.rank,
+      value: r.value,
+      code: 'RANK_COMPOSITE',
+      short_name: 'Overall composite score',
+      name: 'Overall composite score',
+      unit: 'index',
+      sort_order: 0,
+      is_composite: true,
+      is_negative: false,
+    });
+  }
+
+  const { rows: inds } = await query(
     `
-    SELECT p.label AS period, v.geo_name, v.rank, v.value::float AS value,
-           i.code, i.short_name, i.name, i.unit, i.sort_order, i.is_composite
-    FROM ranking_value v
-    JOIN ranking_indicator i ON i.id = v.indicator_id
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE v.geo_level = $1
-      AND p.label = ANY($2::text[])
-      AND i.is_active = TRUE
-      AND i.code <> 'RANK_ASHA_EXP'
-    ORDER BY i.sort_order, v.geo_name
-    `,
-    [geoLevel, labels]
+    SELECT code, short_name, name, unit, is_negative, sno
+    FROM indicator
+    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
+    ORDER BY sno NULLS LAST, code
+    `
   );
-  return rows;
+  for (const ind of inds) {
+    const rows = await loadIndicatorByPeriod({
+      geoLevel,
+      indicatorCode: ind.code,
+      periodLabels: labels,
+      isNegative: !!ind.is_negative,
+    });
+    for (const r of rows) {
+      out.push({
+        period: r.period,
+        geo_name: r.name,
+        rank: r.rank,
+        value: r.value,
+        code: ind.code,
+        short_name: ind.short_name || ind.name,
+        name: ind.name,
+        unit: ind.unit,
+        sort_order: ind.sno != null ? Number(ind.sno) : 999,
+        is_composite: false,
+        is_negative: !!ind.is_negative,
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -392,7 +403,7 @@ async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {})
   if (!periodRow) {
     return {
       has_data: false,
-      message: 'No ranking periods imported yet',
+      message: 'No outcome periods synced yet',
       period: period || null,
       mode: geoLevel,
     };
@@ -424,7 +435,7 @@ async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {})
         code: r.code,
         name: (r.short_name || r.name || r.code).toUpperCase(),
         kind,
-        lowerIsBetter: LOWER_IS_BETTER.has(r.code),
+        lowerIsBetter: !!r.is_negative,
         sortOrder: r.sort_order,
       });
     }

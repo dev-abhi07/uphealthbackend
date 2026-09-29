@@ -102,7 +102,7 @@ curl -H "Authorization: Bearer $TOKEN" \
   http://localhost:3010/api/upload/indicators
 
 curl -o chc_fru.xlsx -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:3010/api/upload/templates/IND_CHC_FRU_CSECTION_PCT/download?period=2026-05&level=facility&source_code=hmis"
+  "http://localhost:3010/api/upload/templates/IND001/download?period=2026-05&level=facility&source_code=hmis"
 
 curl -X POST http://localhost:3010/api/upload \
   -H "Authorization: Bearer $TOKEN" \

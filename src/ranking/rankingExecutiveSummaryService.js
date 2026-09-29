@@ -1,18 +1,14 @@
 /**
  * UP Health Executive Summary — division (or district) performance snapshot.
  * UI: Top/Bottom 3, narrative, key indicators, map ranks, MoM change charts.
+ * Data: indicator_outcome_district (+ division rollup). No ranking_value.
  */
-const { query } = require('../db/pool');
-
-/** Indicators where lower value is better (for best/worst KPI ranking). */
-const LOWER_IS_BETTER = new Set([
-  'RANK_STILLBIRTH',
-  'RANK_OUTLIER',
-  'RANK_CSECTION_CHC_70',
-  'RANK_CSECTION_DH_30',
-  'RANK_DEL_LOAD_POINT',
-  'RANK_DEL_LOAD_ANM',
-]);
+const {
+  resolveOutcomePeriod,
+  listOutcomePeriodLabels,
+  loadCompositeByPeriod,
+  loadStatewideIndicatorAvgs,
+} = require('../outcome/outcomeRankingQueries');
 
 function num(v) {
   if (v === null || v === undefined) return null;
@@ -72,75 +68,7 @@ function bandForRank(rank, total) {
 }
 
 async function resolvePeriod(period) {
-  if (period) {
-    const { rows } = await query(
-      `SELECT * FROM ranking_period WHERE label = $1 OR display ILIKE $1 LIMIT 1`,
-      [period]
-    );
-    return rows[0] || null;
-  }
-  const { rows } = await query(
-    `
-    SELECT p.* FROM ranking_period p
-    JOIN ranking_value v ON v.period_id = p.id
-    WHERE v.geo_level = 'division'
-    GROUP BY p.id
-    ORDER BY p.label DESC
-    LIMIT 1
-    `
-  );
-  return rows[0] || null;
-}
-
-async function loadCompositeByPeriod(geoLevel, periodLabels) {
-  if (!periodLabels.length) return [];
-  const { rows } = await query(
-    `
-    SELECT p.label AS period, v.geo_name, v.value::float AS value, v.rank
-    FROM ranking_value v
-    JOIN ranking_indicator i ON i.id = v.indicator_id
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE i.code = 'RANK_COMPOSITE'
-      AND v.geo_level = $1
-      AND p.label = ANY($2::text[])
-    `,
-    [geoLevel, periodLabels]
-  );
-  return rows.map((r) => ({
-    period: r.period,
-    name: r.geo_name,
-    value: num(r.value),
-    rank: r.rank != null ? Number(r.rank) : null,
-  }));
-}
-
-async function loadStatewideIndicatorAvgs(periodLabel) {
-  const { rows } = await query(
-    `
-    SELECT i.code, i.short_name, i.name, i.unit, i.sort_order,
-           AVG(v.value::float) AS avg_val
-    FROM ranking_value v
-    JOIN ranking_indicator i ON i.id = v.indicator_id
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE v.geo_level = 'district'
-      AND p.label = $1
-      AND i.is_active = TRUE
-      AND i.is_composite = FALSE
-      AND i.code <> 'RANK_ASHA_EXP'
-    GROUP BY i.id
-    HAVING COUNT(v.id) > 0
-    ORDER BY i.sort_order
-    `,
-    [periodLabel]
-  );
-  return rows.map((r) => ({
-    code: r.code,
-    name: r.short_name || r.name,
-    full_name: r.name,
-    unit: r.unit,
-    value: round(r.avg_val, 2),
-    lower_is_better: LOWER_IS_BETTER.has(r.code),
-  }));
+  return resolveOutcomePeriod(period);
 }
 
 function pickBestWorstIndicators(indicators, n = 3) {
@@ -265,7 +193,7 @@ async function getExecutiveSummary({
     return {
       view: 'executive_summary',
       has_data: false,
-      message: 'No ranking periods imported yet',
+      message: 'No outcome periods synced yet. POST /api/ranking/outcome/district/sync',
       period: period || null,
       level: geoLevel,
     };
@@ -275,17 +203,8 @@ async function getExecutiveSummary({
   const prevLabel = prevMonthLabel(periodRow.label);
   const loadLabels = [...new Set([...historyLabels, periodRow.label, prevLabel].filter(Boolean))];
 
-  const { rows: importedRows } = await query(
-    `
-    SELECT DISTINCT p.label
-    FROM ranking_period p
-    JOIN ranking_value v ON v.period_id = p.id
-    WHERE v.geo_level = $1
-    ORDER BY p.label
-    `,
-    [geoLevel]
-  );
-  const imported = new Set(importedRows.map((r) => r.label));
+  const importedLabels = await listOutcomePeriodLabels();
+  const imported = new Set(importedLabels);
   const availableHistory = historyLabels.filter((l) => imported.has(l));
 
   const allComposite = await loadCompositeByPeriod(geoLevel, loadLabels);
@@ -486,5 +405,6 @@ async function getExecutiveSummary({
 
 module.exports = {
   getExecutiveSummary,
-  LOWER_IS_BETTER,
+  /** @deprecated outcome indicators use is_negative; kept for insights import */
+  LOWER_IS_BETTER: new Set(),
 };

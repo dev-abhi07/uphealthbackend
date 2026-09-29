@@ -7,7 +7,7 @@ const { normalizeGeoName } = require('../src/ranking/rankingNameNormalize');
 
 const PAIRS = [
   ['Bagpat', 'Baghpat'],
-  ['Budaun', 'Badaun'],
+  ['Badaun', 'Budaun'],
   ['Unnav', 'Unnao'],
   ['Shrawasti', 'Shravasti'],
   ['Kanpur Division', 'Kanpur Nagar Division'],
@@ -45,7 +45,7 @@ const PAIRS = [
     `
     SELECT DISTINCT geo_level, geo_name
     FROM ranking_value
-    WHERE lower(geo_name) IN ('bagpat','budaun','unnav','shrawasti','kanpur division','alligarh division')
+    WHERE lower(geo_name) IN ('bagpat','badaun','unnav','shrawasti','kanpur division','alligarh division')
     ORDER BY 1,2
     `
   );

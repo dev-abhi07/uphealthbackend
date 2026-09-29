@@ -4,6 +4,72 @@
  */
 const { query } = require('../db/pool');
 const { normalizeGeoName } = require('./rankingNameNormalize');
+const {
+  resolveOutcomePeriod,
+  listOutcomePeriodLabels,
+  loadCompositeByPeriod,
+  loadIndicatorByPeriod,
+  resolveMasterIndicator,
+} = require('../outcome/outcomeRankingQueries');
+const {
+  ASPIRATIONAL_DISTRICTS,
+  parseFilter,
+  districtInCategory,
+  divisionsMatchingCategory,
+  districtNamesForFilter,
+  normalizeKey,
+} = require('./geoCategoryFilter');
+const { groupIndicatorsForSummary, resolveExcelDomainKey, parsePanelTab, typeMeta } = require('./rankingRegistry');
+const { outcomeConfig, parsePeriodInput } = require('../outcome/outcomeConfig');
+
+/** Avoid hammering upstream when FE fires many parallel dashboard GETs. */
+const _outcomeSyncAt = new Map();
+const OUTCOME_SYNC_TTL_MS = 60_000;
+
+/**
+ * Pull district (+ optional block) outcome from HealthAssist into local cache
+ * when OUTCOME_SYNC_ON_READ=true. Used by table / deep-dive so values match API.
+ */
+async function ensureOutcomeSyncedFromApi({ year, month, needBlock = false } = {}) {
+  const cfg = outcomeConfig();
+  if (!cfg.syncOnRead || !cfg.enabled) return null;
+  if (!year || !month) return null;
+
+  const meta = { district: null, block: null };
+  const now = Date.now();
+  const dKey = `district:${year}-${String(month).padStart(2, '0')}`;
+
+  if (
+    cfg.districtUrl &&
+    (!_outcomeSyncAt.has(dKey) || now - _outcomeSyncAt.get(dKey) > OUTCOME_SYNC_TTL_MS)
+  ) {
+    try {
+      const { syncDistrictOutcome } = require('../outcome/outcomeDistrictService');
+      meta.district = await syncDistrictOutcome({ month, year, force: true });
+      if (meta.district?.ok) _outcomeSyncAt.set(dKey, Date.now());
+    } catch (e) {
+      meta.district = { ok: false, reason: e.message };
+    }
+  }
+
+  if (needBlock && cfg.blockUrl) {
+    const bKey = `block:${year}-${String(month).padStart(2, '0')}`;
+    if (
+      !_outcomeSyncAt.has(bKey) ||
+      Date.now() - _outcomeSyncAt.get(bKey) > OUTCOME_SYNC_TTL_MS
+    ) {
+      try {
+        const { syncBlockOutcome } = require('../outcome/outcomeBlockService');
+        meta.block = await syncBlockOutcome({ month, year, force: true });
+        if (meta.block?.ok) _outcomeSyncAt.set(bKey, Date.now());
+      } catch (e) {
+        meta.block = { ok: false, reason: e.message };
+      }
+    }
+  }
+
+  return meta;
+}
 const { formatValue: fmt } = (() => {
   // local copy to avoid circular deps; mirrors rankingService.formatValue
   function formatValue(value, unit) {
@@ -17,20 +83,6 @@ const { formatValue: fmt } = (() => {
   }
   return { formatValue };
 })();
-
-/** Static filters (UP aspirational districts — extend as needed). */
-const ASPIRATIONAL_DISTRICTS = [
-  'Bahraich',
-  'Balrampur',
-  'Chandauli',
-  'Chitrakoot',
-  'Fatehpur',
-  'Gonda',
-  'Kaushambi',
-  'Shravasti',
-  'Siddharth Nagar',
-  'Sonbhadra',
-].map((n) => n.toLowerCase());
 
 function num(v) {
   if (v === null || v === undefined) return null;
@@ -92,53 +144,50 @@ function trailingPeriodLabels(periodLabel, count = 6) {
 }
 
 async function resolvePeriod(period) {
-  if (period) {
-    const { rows } = await query(
-      `SELECT * FROM ranking_period WHERE label = $1 OR display ILIKE $1 LIMIT 1`,
-      [period]
-    );
-    return rows[0] || null;
-  }
-  const { rows } = await query(
-    `
-    SELECT p.* FROM ranking_period p
-    JOIN ranking_value v ON v.period_id = p.id
-    GROUP BY p.id
-    ORDER BY p.label DESC
-    LIMIT 1
-    `
-  );
-  return rows[0] || null;
+  return resolveOutcomePeriod(period);
 }
 
 async function resolveIndicator(code) {
-  const c = String(code || 'RANK_COMPOSITE').trim().toUpperCase();
-  const { rows } = await query(
-    `
-    SELECT id, code, name, short_name, unit, is_composite
-    FROM ranking_indicator
-    WHERE is_active = TRUE AND upper(code) = $1
-    LIMIT 1
-    `,
-    [c]
-  );
-  return rows[0] || null;
+  const ind = await resolveMasterIndicator(code);
+  if (!ind) return null;
+  return {
+    id: ind.id || ind.code,
+    code: ind.code,
+    name: ind.name,
+    short_name: ind.short_name || ind.name,
+    unit: ind.unit,
+    is_composite: !!ind.is_composite,
+    is_negative: !!ind.is_negative,
+  };
 }
 
-async function loadValuesForPeriods({ geoLevel, indicatorId, periodLabels }) {
+async function loadValuesForPeriods({ geoLevel, indicatorId, indicatorCode, periodLabels, isNegative }) {
   if (!periodLabels.length) return [];
-  const { rows } = await query(
-    `
-    SELECT p.label AS period, v.geo_name, v.district_name, v.value, v.rank
-    FROM ranking_value v
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE v.geo_level = $1
-      AND v.indicator_id = $2
-      AND p.label = ANY($3::text[])
-    `,
-    [geoLevel, indicatorId, periodLabels]
-  );
-  return rows;
+
+  const code = String(indicatorCode || indicatorId || 'RANK_COMPOSITE').toUpperCase();
+  const isComposite = !code || code === 'RANK_COMPOSITE' || code === 'COMPOSITE' || code === 'INDEX_OUTCOME';
+  const level =
+    geoLevel === 'division' ? 'division' : geoLevel === 'block' ? 'block' : 'district';
+
+  const rows = isComposite
+    ? await loadCompositeByPeriod(level, periodLabels)
+    : await loadIndicatorByPeriod({
+        geoLevel: level,
+        indicatorCode: code,
+        periodLabels,
+        isNegative: !!isNegative,
+      });
+
+  return rows.map((r) => ({
+    period: r.period,
+    geo_name: r.name,
+    district_name:
+      level === 'district' ? r.name : r.district_name || null,
+    district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+    block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+    value: r.value,
+    rank: r.rank,
+  }));
 }
 
 function avg(nums) {
@@ -155,6 +204,43 @@ function roundScore(v, isComposite) {
 }
 
 /**
+ * Resolve block by LGD / id / name for breakup scoping.
+ */
+async function resolveBlockRef(block) {
+  if (!block) return null;
+  const raw = String(block).trim();
+  if (!raw) return null;
+  if (raw.includes('__')) {
+    const part = raw.split('__').slice(1).join(' ').replace(/-/g, ' ');
+    return resolveBlockRef(part);
+  }
+  const { rows } = await query(
+    `
+    SELECT b.name AS block_name, d.name AS district_name, b.lgd_code
+    FROM block b
+    JOIN district d ON d.id = b.district_id
+    WHERE b.lgd_code::text = $1
+       OR b.id::text = $1
+       OR lower(trim(b.name)) = lower(trim($1))
+    ORDER BY
+      CASE
+        WHEN b.lgd_code::text = $1 THEN 0
+        WHEN b.id::text = $1 THEN 1
+        ELSE 2
+      END
+    LIMIT 1
+    `,
+    [raw]
+  );
+  if (!rows[0]) return { blockName: normalizeGeoName(raw), districtName: null };
+  return {
+    blockName: rows[0].block_name,
+    districtName: rows[0].district_name,
+    blockLgd: rows[0].lgd_code != null ? String(rows[0].lgd_code) : null,
+  };
+}
+
+/**
  * Indicator breakup only (state / division / district / block).
  * Right-panel uses this so block clicks don't rebuild the full rankings tree.
  */
@@ -166,9 +252,31 @@ async function buildIndicatorBreakup({
   block,
   divCode,
   districtMaster = [],
+  filter = 'all',
 }) {
-  const scopeBlock = block ? normalizeGeoName(block) : null;
-  let resolvedScopeDistrict = district ? normalizeGeoName(district) : null;
+  const resolvedBlock = await resolveBlockRef(block);
+  const scopeBlock = resolvedBlock?.blockName
+    ? normalizeGeoName(resolvedBlock.blockName)
+    : block
+      ? normalizeGeoName(block)
+      : null;
+  let resolvedScopeDistrict = district
+    ? normalizeGeoName(district)
+    : resolvedBlock?.districtName
+      ? normalizeGeoName(resolvedBlock.districtName)
+      : null;
+  // If district looks like an LGD code, resolve name
+  if (district && /^\d+$/.test(String(district).trim())) {
+    const { rows: distRows } = await query(
+      `
+      SELECT name FROM district
+      WHERE lgd_code::text = $1 OR id::text = $1
+      LIMIT 1
+      `,
+      [String(district).trim()]
+    );
+    if (distRows[0]) resolvedScopeDistrict = normalizeGeoName(distRows[0].name);
+  }
   const scopeDivision = division ? normalizeGeoName(division) : null;
   let breakupGeoLevel = 'district';
   let breakupGeoNames = null;
@@ -176,30 +284,13 @@ async function buildIndicatorBreakup({
   /** @type {Set<string>|null} */
   let breakupBlockScope = null;
 
-  if (scopeBlock && resolvedScopeDistrict) {
+  if (scopeBlock) {
     breakupGeoLevel = 'block';
-    breakupTitle = `${scopeBlock.toUpperCase()} - ${resolvedScopeDistrict.toUpperCase()}`;
+    breakupGeoNames = [scopeBlock];
+    breakupTitle = scopeBlock.toUpperCase();
     breakupBlockScope = new Set([scopeBlock.toLowerCase()]);
-  } else if (scopeBlock && !resolvedScopeDistrict) {
-    const { rows: blockDistRows } = await query(
-      `
-      SELECT DISTINCT district_name
-      FROM ranking_value
-      WHERE geo_level = 'block'
-        AND LOWER(geo_name) = LOWER($1)
-        AND district_name IS NOT NULL
-        AND district_name <> ''
-      LIMIT 1
-      `,
-      [scopeBlock]
-    );
-    resolvedScopeDistrict = blockDistRows[0]
-      ? normalizeGeoName(blockDistRows[0].district_name)
-      : null;
-    if (resolvedScopeDistrict) {
-      breakupGeoLevel = 'block';
-      breakupTitle = `${scopeBlock.toUpperCase()} - ${resolvedScopeDistrict.toUpperCase()}`;
-      breakupBlockScope = new Set([scopeBlock.toLowerCase()]);
+    if (!resolvedScopeDistrict && resolvedBlock?.districtName) {
+      resolvedScopeDistrict = normalizeGeoName(resolvedBlock.districtName);
     }
   } else if (resolvedScopeDistrict) {
     breakupGeoLevel = 'district';
@@ -227,31 +318,60 @@ async function buildIndicatorBreakup({
     }
   }
 
+  // State / division breakup under aspirational | high_priority → restrict district pool
+  const filterKey = parseFilter(filter);
+  if (filterKey !== 'all' && breakupGeoLevel === 'district' && !scopeBlock) {
+    if (!breakupGeoNames) {
+      // Full-state breakup: only category districts
+      const names = districtNamesForFilter(filterKey, districtMaster);
+      if (names && names.length) {
+        breakupGeoNames = names;
+        breakupTitle =
+          filterKey === 'aspirational'
+            ? 'ASPIRATIONAL DISTRICTS'
+            : 'HIGH PRIORITY DISTRICTS';
+      }
+    } else if (!resolvedScopeDistrict) {
+      // Division (or multi-district) scope: intersect with category
+      breakupGeoNames = breakupGeoNames.filter((n) =>
+        districtInCategory(n, filterKey)
+      );
+    }
+  }
+
   const { rows: allInds } = await query(
     `
-    SELECT id, code, short_name, name, unit, is_composite, sort_order
-    FROM ranking_indicator
-    WHERE is_active = TRUE AND is_composite = FALSE
-    ORDER BY sort_order
+    SELECT code, short_name, name, unit, FALSE AS is_composite, sno AS sort_order,
+           is_negative, domain, domain_label, indicator_type
+    FROM indicator
+    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
+    ORDER BY sno NULLS LAST, code
     `
   );
 
   const breakupPeriodLabels = [...new Set([periodRow.label, ...fyLabels])];
-  const indIds = allInds.map((i) => i.id);
-  const breakupGeoQueryLevel = breakupGeoLevel === 'block' ? 'block' : 'district';
-  const { rows: allBreakupRows } = indIds.length
-    ? await query(
-        `
-        SELECT v.indicator_id, p.label AS period, v.geo_name, v.district_name, v.value, v.rank
-        FROM ranking_value v
-        JOIN ranking_period p ON p.id = v.period_id
-        WHERE v.geo_level = $1
-          AND v.indicator_id = ANY($2::int[])
-          AND p.label = ANY($3::text[])
-        `,
-        [breakupGeoQueryLevel, indIds, breakupPeriodLabels]
-      )
-    : { rows: [] };
+  const breakupLoadLevel = breakupGeoLevel === 'block' ? 'block' : 'district';
+
+  // Load all indicator values from outcome for scoped geos
+  const allBreakupRows = [];
+  for (const bi of allInds) {
+    const rows = await loadValuesForPeriods({
+      geoLevel: breakupLoadLevel,
+      indicatorCode: bi.code,
+      periodLabels: breakupPeriodLabels,
+      isNegative: !!bi.is_negative,
+    });
+    for (const r of rows) {
+      allBreakupRows.push({
+        indicator_code: bi.code,
+        period: r.period,
+        geo_name: r.geo_name,
+        district_name: r.district_name,
+        value: r.value,
+        rank: r.rank,
+      });
+    }
+  }
 
   const scopeSet = breakupGeoNames
     ? new Set(breakupGeoNames.map((n) => n.toLowerCase()))
@@ -261,25 +381,15 @@ async function buildIndicatorBreakup({
     : null;
 
   const indicator_breakup = allInds.map((bi) => {
-    const bRows = allBreakupRows.filter(
-      (r) => Number(r.indicator_id) === Number(bi.id)
-    );
+    const bRows = allBreakupRows.filter((r) => r.indicator_code === bi.code);
     let scoped = bRows;
-    if (breakupBlockScope && scopeDistrictKey) {
+    if (breakupBlockScope && breakupGeoLevel === 'block') {
       scoped = bRows.filter((r) => {
-        const geoKey = String(r.geo_name || '')
-          .toLowerCase()
-          .trim();
-        const distKey = String(r.district_name || '')
-          .toLowerCase()
-          .trim();
-        const distNorm = normalizeGeoName(r.district_name || '')
-          .toLowerCase()
-          .trim();
-        return (
-          breakupBlockScope.has(geoKey) &&
-          (distKey === scopeDistrictKey || distNorm === scopeDistrictKey)
-        );
+        const geoKey = normalizeGeoName(r.geo_name || '').toLowerCase();
+        if (!breakupBlockScope.has(geoKey)) return false;
+        if (!scopeDistrictKey) return true;
+        const distNorm = normalizeGeoName(r.district_name || '').toLowerCase();
+        return distNorm === scopeDistrictKey;
       });
     } else if (scopeSet) {
       scoped = bRows.filter((r) =>
@@ -306,10 +416,27 @@ async function buildIndicatorBreakup({
     }
     const fy = avg(fyScopedVals);
 
+    const excel = resolveExcelDomainKey(bi.domain_label, bi.domain);
+    const typeKey = String(bi.indicator_type || '')
+      .trim()
+      .toLowerCase() || null;
+    const typeInfo = typeKey ? typeMeta(typeKey) : null;
     return {
       code: bi.code,
       indicator: bi.short_name || bi.name,
+      name: bi.short_name || bi.name,
       unit: bi.unit,
+      // DOMAIN column / FE accordion: Excel Domain label (never ante_natal / delivery_care)
+      domain: excel.label || excel.key,
+      domain_key: excel.key,
+      domain_label: excel.label,
+      domain_slug: bi.domain || null,
+      // TYPE column / FE accordion: COVERAGE / QUALITY / DATA QUALITY (not coverage / data_quality)
+      type: typeInfo?.label || typeKey,
+      type_key: typeKey,
+      type_label: typeInfo?.label || null,
+      indicator_type: typeKey,
+      sort_order: bi.sort_order != null ? Number(bi.sort_order) : null,
       up_avg: roundScore(up_avg, false),
       up_avg_display: formatValue(up_avg, bi.unit),
       best_perf: best
@@ -333,6 +460,144 @@ async function buildIndicatorBreakup({
   };
 }
 
+function mapBreakupToIndicators(indicator_breakup) {
+  return (indicator_breakup || []).map((r) => ({
+    code: r.code,
+    name: r.indicator || r.name,
+    unit: r.unit,
+    domain: r.domain_key || r.domain || null,
+    domain_label: r.domain_label || null,
+    domain_slug: r.domain_slug || null,
+    // keep machine key for groupIndicatorsForSummary
+    indicator_type: r.type_key || r.indicator_type || null,
+    type: r.type_key || r.indicator_type || null,
+    type_label: r.type_label || null,
+    sort_order: r.sort_order != null ? Number(r.sort_order) : null,
+    is_composite: false,
+    value: r.monthly,
+    display_value: r.monthly_display,
+    up_avg: r.up_avg,
+    up_avg_display: r.up_avg_display,
+    best_perf: r.best_perf,
+    fy: r.fy,
+    fy_display: r.fy_display,
+    monthly: r.monthly,
+    monthly_display: r.monthly_display,
+  }));
+}
+
+/** Roll up UP AVG / MONTHLY / FY / BEST onto domain|type groups for table breakup. */
+function enrichBreakupGroups(groups) {
+  return (groups || []).map((g) => {
+    const items = g.indicators || [];
+    const monthlyVals = items.map((i) => i.monthly ?? i.value).filter((x) => x != null);
+    const upVals = items.map((i) => i.up_avg).filter((x) => x != null);
+    const fyVals = items.map((i) => i.fy).filter((x) => x != null);
+    const monthly =
+      monthlyVals.length
+        ? Number(
+            (
+              monthlyVals.reduce((a, b) => a + Number(b), 0) / monthlyVals.length
+            ).toFixed(2)
+          )
+        : null;
+    const up_avg =
+      upVals.length
+        ? Number((upVals.reduce((a, b) => a + Number(b), 0) / upVals.length).toFixed(2))
+        : null;
+    const fy =
+      fyVals.length
+        ? Number((fyVals.reduce((a, b) => a + Number(b), 0) / fyVals.length).toFixed(2))
+        : null;
+    let best_perf = null;
+    for (const i of items) {
+      const v = i.monthly ?? i.value;
+      if (v == null) continue;
+      if (!best_perf || Number(v) > Number(best_perf.value)) {
+        best_perf = {
+          name: i.name || i.indicator,
+          value: Number(v),
+          display_value: i.monthly_display || i.display_value || String(v),
+        };
+      }
+      if (i.best_perf && i.best_perf.value != null) {
+        if (!best_perf || Number(i.best_perf.value) > Number(best_perf.value)) {
+          best_perf = { ...i.best_perf };
+        }
+      }
+    }
+    const unit = items[0]?.unit || 'percent';
+    return {
+      key: g.key,
+      label: g.label,
+      // DOMAIN column in table breakup — always human Excel label
+      domain: g.label,
+      domain_key: g.key,
+      color: g.color,
+      count: items.length,
+      expandable: true,
+      up_avg,
+      up_avg_display:
+        up_avg == null
+          ? null
+          : unit === 'percent'
+            ? `${up_avg}%`
+            : up_avg,
+      best_perf,
+      monthly,
+      monthly_display:
+        monthly == null
+          ? null
+          : unit === 'percent'
+            ? `${monthly}%`
+            : monthly,
+      fy,
+      fy_display:
+        fy == null ? null : unit === 'percent' ? `${fy}%` : fy,
+      indicators: items,
+    };
+  });
+}
+
+/**
+ * Shape right-panel INDICATOR BREAKUP for table view dropdown.
+ * Query key: breakup_tab=indicator|type|domain  (aliases: breakup_group, group_by)
+ */
+function parseBreakupTab(raw) {
+  const v = String(raw || 'indicator').toLowerCase().trim();
+  if (v === 'type' || v === 'by_type' || v === 'types') return 'type';
+  if (v === 'domain' || v === 'by_domain' || v === 'domains') return 'domain';
+  return 'indicator';
+}
+
+function shapeBreakupPanel({
+  indicator_breakup,
+  by_type,
+  by_domain,
+  breakupTabRaw,
+}) {
+  const tab = parseBreakupTab(breakupTabRaw);
+  const typeGroups = enrichBreakupGroups(by_type);
+  const domainGroups = enrichBreakupGroups(by_domain);
+
+  // breakup_* keys are independent of panel_tab (map SUMMARY shaping).
+  const base = {
+    breakup_tab: tab,
+    breakup_by_type: typeGroups,
+    breakup_by_domain: domainGroups,
+    // Keep flat list always — FE may group client-side using domain / domain_label
+    indicator_breakup: indicator_breakup || [],
+  };
+
+  if (tab === 'type') {
+    return { ...base, breakup_rows: typeGroups };
+  }
+  if (tab === 'domain') {
+    return { ...base, breakup_rows: domainGroups };
+  }
+  return { ...base, breakup_rows: indicator_breakup || [] };
+}
+
 /**
  * @param {object} opts
  * @param {'division'|'district'|'table'} opts.view  table → use tableMode/level
@@ -346,6 +611,7 @@ async function buildIndicatorBreakup({
  * @param {string} [opts.block]
  * @param {string} [opts.divCode]
  * @param {string} [opts.panelTab] indicators|type|domain
+ * @param {string} [opts.breakupTab] indicator|type|domain — table INDICATOR BREAKUP dropdown
  * @param {boolean|string|number} [opts.labels]
  * @param {string} [opts.analyticsCompare] timeperiod|…
  * @param {string} [opts.analyticsMode] month|fy
@@ -363,6 +629,7 @@ async function getDeepDiveDashboard({
   block,
   divCode,
   panelTab = 'indicators',
+  breakupTab = 'indicator',
   labels = true,
   analyticsCompare = 'timeperiod',
   analyticsMode = 'month',
@@ -371,7 +638,7 @@ async function getDeepDiveDashboard({
   const uiView = view === 'table' || String(view).toLowerCase() === 'table' ? 'table' : 'deep_dive';
   const rawGeo =
     String(tableMode || level || (view === 'table' ? 'division' : view) || 'division').toLowerCase();
-  const geoLevel = rawGeo === 'district' ? 'district' : 'division';
+  const geoLevel = ['division', 'district', 'block'].includes(rawGeo) ? rawGeo : 'division';
   const panel = String(panelTab || 'indicators').toLowerCase();
   const showLabels = labels === true || labels === 1 || labels === '1' || labels === 'true';
   const compare = String(analyticsCompare || 'timeperiod').toLowerCase();
@@ -382,7 +649,49 @@ async function getDeepDiveDashboard({
     breakupOnly === '1' ||
     breakupOnly === 'true';
 
-  const periodRow = await resolvePeriod(period);
+  // Resolve district LGD / id → name for filtering + breakup
+  let resolvedDistrict = district || null;
+  if (district && /^\d+$/.test(String(district).trim())) {
+    const { rows: distRows } = await query(
+      `
+      SELECT name FROM district
+      WHERE lgd_code::text = $1 OR id::text = $1
+      LIMIT 1
+      `,
+      [String(district).trim()]
+    );
+    if (distRows[0]) resolvedDistrict = distRows[0].name;
+  }
+  const resolvedBlock = block ? await resolveBlockRef(block) : null;
+  const resolvedBlockName = resolvedBlock?.blockName || block || null;
+  if (!resolvedDistrict && resolvedBlock?.districtName) {
+    resolvedDistrict = resolvedBlock.districtName;
+  }
+
+  const needBlockSync =
+    geoLevel === 'block' || !!resolvedBlockName || geoLevel === 'district';
+
+  // If FE asked for a concrete month, sync from API first so cache matches upstream
+  // (also allows first-time load when that month was never cached).
+  const parsedAsk = period ? parsePeriodInput({ period }) : null;
+  let syncMeta = null;
+  if (parsedAsk) {
+    syncMeta = await ensureOutcomeSyncedFromApi({
+      year: parsedAsk.year,
+      month: parsedAsk.month,
+      needBlock: needBlockSync,
+    });
+  }
+
+  let periodRow = await resolvePeriod(period);
+  if (!periodRow && parsedAsk) {
+    // Sync succeeded (or period known) but hasDistrict check lagged — serve requested month
+    periodRow = {
+      ...parsedAsk,
+      label: parsedAsk.period_label,
+      display: parsedAsk.period_display,
+    };
+  }
   if (!periodRow) {
     return {
       view: uiView,
@@ -403,11 +712,23 @@ async function getDeepDiveDashboard({
     };
   }
 
+  // Latest-period path (no period query): still refresh that month from API
+  if (!parsedAsk) {
+    syncMeta = await ensureOutcomeSyncedFromApi({
+      year: periodRow.year,
+      month: periodRow.month,
+      needBlock: needBlockSync,
+    });
+  }
+
   // Fast path for table right-panel (block / district / division / state)
   if (onlyBreakup) {
     const fyLabels = fyPeriodLabels(periodRow.label);
     let districtMaster = [];
-    if ((division || divCode) && !district && !block) {
+    if (
+      ((division || divCode) && !resolvedDistrict && !resolvedBlockName) ||
+      parseFilter(filter) !== 'all'
+    ) {
       const { rows } = await query(
         `
         SELECT d.name AS district_name, dv.name AS division_name, dv.code AS div_code
@@ -422,10 +743,19 @@ async function getDeepDiveDashboard({
       periodRow,
       fyLabels,
       division,
-      district,
-      block,
+      district: resolvedDistrict,
+      block: resolvedBlockName,
       divCode,
       districtMaster,
+      filter,
+    });
+    const indicators = mapBreakupToIndicators(breakup.indicator_breakup);
+    const { by_type, by_domain } = groupIndicatorsForSummary(indicators);
+    const shaped = shapeBreakupPanel({
+      indicator_breakup: breakup.indicator_breakup,
+      by_type,
+      by_domain,
+      breakupTabRaw: breakupTab,
     });
     return {
       view: uiView,
@@ -440,21 +770,16 @@ async function getDeepDiveDashboard({
       panel_tab: panel,
       labels: showLabels,
       breakup_only: true,
+      filter: parseFilter(filter),
       breakup_scope: breakup.breakup_scope,
       breakup_geo_level: breakup.breakup_geo_level,
-      indicator_breakup: breakup.indicator_breakup,
-      indicators: breakup.indicator_breakup.map((r) => ({
-        code: r.code,
-        name: r.indicator,
-        unit: r.unit,
-        value: r.monthly,
-        display_value: r.monthly_display,
-        up_avg: r.up_avg,
-        up_avg_display: r.up_avg_display,
-        best_perf: r.best_perf,
-        fy: r.fy,
-        fy_display: r.fy_display,
-      })),
+      summary_scope: breakup.breakup_geo_level,
+      district: resolvedDistrict || null,
+      block: resolvedBlockName || null,
+      ...shaped,
+      indicators,
+      by_type,
+      by_domain,
       rankings: [],
       summary: null,
     };
@@ -480,19 +805,9 @@ async function getDeepDiveDashboard({
     };
   }
 
-  // Month columns for timeperiod analytics: imported periods up to selected
-  const { rows: importedPeriods } = await query(
-    `
-    SELECT DISTINCT p.label
-    FROM ranking_period p
-    JOIN ranking_value v ON v.period_id = p.id
-    WHERE v.geo_level = $1
-      AND p.label <= $2
-    ORDER BY p.label ASC
-    `,
-    [geoLevel, periodRow.label]
-  );
-  const analyticsPeriodLabels = importedPeriods.map((r) => r.label);
+  // Month columns for timeperiod analytics: outcome periods up to selected
+  const allOutcomeLabels = await listOutcomePeriodLabels();
+  const analyticsPeriodLabels = allOutcomeLabels.filter((l) => l <= periodRow.label);
   const trendLabels =
     mode === 'fy'
       ? fyPeriodLabels(periodRow.label)
@@ -504,10 +819,11 @@ async function getDeepDiveDashboard({
     ...new Set([...trendLabels, ...fyLabels, periodRow.label, ...analyticsPeriodLabels]),
   ];
 
-  const rows = await loadValuesForPeriods({
+  const rowsRaw = await loadValuesForPeriods({
     geoLevel,
-    indicatorId: ind.id,
+    indicatorCode: ind.code,
     periodLabels: allLabels,
+    isNegative: !!ind.is_negative,
   });
 
   // District master → division for hierarchy / filters
@@ -527,26 +843,137 @@ async function getDeepDiveDashboard({
     });
   }
 
+  // Apply geo filters (same intent as map view)
+  let rows = rowsRaw;
+  if (geoLevel === 'block' && resolvedDistrict) {
+    const distKey = normalizeGeoName(resolvedDistrict).toLowerCase();
+    rows = rows.filter(
+      (r) => normalizeGeoName(r.district_name || '').toLowerCase() === distKey
+    );
+  } else if (geoLevel === 'district' && (divCode || division)) {
+    const allowed = new Set(
+      districtMaster
+        .filter((d) => {
+          if (divCode && String(d.div_code) === String(divCode)) return true;
+          if (
+            division &&
+            normalizeGeoName(d.division_name) === normalizeGeoName(division)
+          ) {
+            return true;
+          }
+          return false;
+        })
+        .map((d) => d.district_name.toLowerCase())
+    );
+    if (allowed.size) {
+      rows = rows.filter((r) => allowed.has(String(r.geo_name || '').toLowerCase()));
+    }
+  } else if (geoLevel === 'division' && (divCode || division)) {
+    let divKey = division ? normalizeGeoName(division).toLowerCase() : null;
+    if (!divKey && divCode) {
+      const { rows: divRows } = await query(
+        `SELECT name FROM division WHERE code = $1 LIMIT 1`,
+        [String(divCode)]
+      );
+      if (divRows[0]) divKey = normalizeGeoName(divRows[0].name).toLowerCase();
+    }
+    if (divKey) {
+      rows = rowsRaw.filter(
+        (r) => normalizeGeoName(r.geo_name || '').toLowerCase() === divKey
+      );
+    }
+  }
+
+  // Block table: if this indicator has no block values (common for some INDs),
+  // still list the district's blocks (from composite headers) with null scores
+  // so the response shape stays consistent across indicators.
+  let indicatorHasBlockValues = true;
+  if (geoLevel === 'block' && resolvedDistrict) {
+    const periodHasValues = rows.some((r) => r.period === periodRow.label && r.value != null);
+    if (!periodHasValues) {
+      indicatorHasBlockValues = false;
+      const compositeScaffold = await loadValuesForPeriods({
+        geoLevel: 'block',
+        indicatorCode: 'RANK_COMPOSITE',
+        periodLabels: [periodRow.label],
+        isNegative: false,
+      });
+      const distKey = normalizeGeoName(resolvedDistrict).toLowerCase();
+      const scaffold = compositeScaffold.filter(
+        (r) => normalizeGeoName(r.district_name || '').toLowerCase() === distKey
+      );
+      const seen = new Set();
+      for (const r of scaffold) {
+        const key = String(r.geo_name || '').toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        rows.push({
+          period: periodRow.label,
+          geo_name: r.geo_name,
+          district_name: r.district_name || resolvedDistrict,
+          district_lgd: r.district_lgd,
+          block_lgd: r.block_lgd,
+          value: null,
+          rank: null,
+        });
+      }
+    }
+  }
+
   // Pivot: geo_name → period → {value, rank}
+  // For blocks, key by district||block to avoid cross-district name collisions
   const byGeo = new Map();
+  const geoMeta = new Map();
   for (const r of rows) {
-    const key = r.geo_name;
-    if (!byGeo.has(key)) byGeo.set(key, new Map());
+    const key =
+      geoLevel === 'block'
+        ? `${String(r.district_name || '').toLowerCase()}||${String(r.geo_name || '').toLowerCase()}`
+        : r.geo_name;
+    if (!byGeo.has(key)) {
+      byGeo.set(key, new Map());
+      geoMeta.set(key, {
+        name: r.geo_name,
+        district_name: r.district_name || (geoLevel === 'district' ? r.geo_name : null),
+        block_lgd: r.block_lgd || null,
+        district_lgd: r.district_lgd || null,
+      });
+    }
     byGeo.get(key).set(r.period, {
       value: num(r.value),
       rank: r.rank != null ? Number(r.rank) : null,
     });
   }
 
-  let geoNames = [...byGeo.keys()].sort((a, b) => a.localeCompare(b));
+  let geoKeys = [...byGeo.keys()].sort((a, b) => {
+    const na = geoMeta.get(a)?.name || a;
+    const nb = geoMeta.get(b)?.name || b;
+    return String(na).localeCompare(String(nb));
+  });
 
-  // Optional aspirational filter (district view, or division children later)
-  const filterKey = String(filter || 'all').toLowerCase();
-  if (filterKey === 'aspirational' && geoLevel === 'district') {
-    geoNames = geoNames.filter((n) => ASPIRATIONAL_DISTRICTS.includes(n.toLowerCase()));
-  } else if (filterKey === 'high_priority' && geoLevel === 'district') {
-    // Placeholder: no master list yet — return empty with note in meta
-    geoNames = [];
+  // Category filter: aspirational | high_priority (skip at block level)
+  const filterKey = parseFilter(filter);
+  let filter_note = null;
+  if (filterKey !== 'all' && geoLevel !== 'block') {
+    if (geoLevel === 'district') {
+      geoKeys = geoKeys.filter((k) =>
+        districtInCategory(geoMeta.get(k)?.name || k, filterKey)
+      );
+    } else if (geoLevel === 'division') {
+      const allowedDivs = divisionsMatchingCategory(districtMaster, filterKey);
+      if (allowedDivs) {
+        geoKeys = geoKeys.filter((k) =>
+          allowedDivs.has(normalizeKey(geoMeta.get(k)?.name || k))
+        );
+      }
+    }
+    if (!geoKeys.length) {
+      filter_note =
+        filterKey === 'aspirational'
+          ? 'No aspirational districts matched for this geo level'
+          : 'No high_priority districts matched for this geo level';
+    }
+  } else if (filterKey !== 'all' && geoLevel === 'block') {
+    filter_note = 'Category filter skipped at block level';
   }
 
   const isComposite = !!ind.is_composite;
@@ -577,6 +1004,7 @@ async function getDeepDiveDashboard({
     return {
       name: geoName,
       rank: monthlyCell ? monthlyCell.rank : null,
+      state_rank: monthlyCell ? monthlyCell.rank : null,
       monthly: roundScore(monthly, isComposite),
       monthly_display: isComposite
         ? roundScore(monthly, true)
@@ -590,9 +1018,13 @@ async function getDeepDiveDashboard({
     };
   }
 
-  function buildRow(geoName) {
-    return buildFromSeries(geoName, byGeo.get(geoName) || new Map(), {
+  function buildRow(geoKey) {
+    const meta = geoMeta.get(geoKey) || { name: geoKey };
+    return buildFromSeries(meta.name, byGeo.get(geoKey) || new Map(), {
       geo_level: geoLevel,
+      district_name: meta.district_name || null,
+      block_lgd: meta.block_lgd || null,
+      district_lgd: meta.district_lgd || null,
     });
   }
 
@@ -605,8 +1037,9 @@ async function getDeepDiveDashboard({
   // Block series keyed by district → block name (for Division→District→Block expand)
   const blockRows = await loadValuesForPeriods({
     geoLevel: 'block',
-    indicatorId: ind.id,
+    indicatorCode: ind.code,
     periodLabels: allLabels,
+    isNegative: !!ind.is_negative,
   });
   /** @type {Map<string, Map<string, Map<string, {value:number|null, rank:number|null}>>>} */
   const blocksByDistrict = new Map();
@@ -638,7 +1071,7 @@ async function getDeepDiveDashboard({
       .sort(sortRankRows);
   }
 
-  let rankings = geoNames.map(buildRow);
+  let rankings = geoKeys.map(buildRow);
   rankings.sort(sortRankRows);
 
   // Attach district children under each division (By Division tab expand)
@@ -646,8 +1079,9 @@ async function getDeepDiveDashboard({
   if (geoLevel === 'division') {
     const districtRows = await loadValuesForPeriods({
       geoLevel: 'district',
-      indicatorId: ind.id,
+      indicatorCode: ind.code,
       periodLabels: allLabels,
+      isNegative: !!ind.is_negative,
     });
     const distByGeo = new Map();
     for (const r of districtRows) {
@@ -669,28 +1103,34 @@ async function getDeepDiveDashboard({
     }
 
     let allDistrictNames = [...distByGeo.keys()];
-    if (filterKey === 'aspirational') {
+    if (filterKey === 'aspirational' || filterKey === 'high_priority') {
       allDistrictNames = allDistrictNames.filter((n) =>
-        ASPIRATIONAL_DISTRICTS.includes(n.toLowerCase())
+        districtInCategory(n, filterKey)
       );
     }
 
-    rankings = rankings.map((divRow) => {
-      const children = allDistrictNames
-        .filter((dn) => {
-          const meta = divisionByDistrict.get(dn.toLowerCase());
-          return meta && meta.division === divRow.name;
-        })
-        .map(buildDistrictRow)
-        .sort(sortRankRows);
-      return {
-        ...divRow,
-        geo_level: 'division',
-        children,
-        child_count: children.length,
-        expandable: children.length > 0,
-      };
-    });
+    rankings = rankings
+      .map((divRow) => {
+        const children = allDistrictNames
+          .filter((dn) => {
+            const meta = divisionByDistrict.get(dn.toLowerCase());
+            return meta && meta.division === divRow.name;
+          })
+          .map(buildDistrictRow)
+          .sort(sortRankRows);
+        return {
+          ...divRow,
+          geo_level: 'division',
+          children,
+          child_count: children.length,
+          expandable: children.length > 0,
+        };
+      })
+      .filter((divRow) => {
+        // Drop divisions with no matching category districts
+        if (filterKey === 'all') return true;
+        return (divRow.children || []).length > 0;
+      });
   } else if (geoLevel === 'district') {
     // By District tab: expand district → blocks
     rankings = rankings.map((distRow) => {
@@ -703,6 +1143,17 @@ async function getDeepDiveDashboard({
         expandable: blockChildren.length > 0,
       };
     });
+  } else if (geoLevel === 'block') {
+    rankings = rankings.map((row, idx) => ({
+      ...row,
+      geo_level: 'block',
+      // Keep API rank on rank/local_rank; list_index = position in this list
+      local_rank: row.rank != null ? row.rank : row.state_rank != null ? row.state_rank : idx + 1,
+      list_index: idx + 1,
+      children: null,
+      child_count: 0,
+      expandable: false,
+    }));
   }
 
   // State (UP) aggregate row
@@ -740,29 +1191,65 @@ async function getDeepDiveDashboard({
     children: null,
   };
 
-  // Summary cards — always district-based for top/lowest/total (matches screenshot)
-  const districtComposite = await loadValuesForPeriods({
-    geoLevel: 'district',
-    indicatorId: ind.id,
+  // Summary cards — scoped to current geo list (districts or blocks)
+  const summarySourceLevel = geoLevel === 'block' ? 'block' : 'district';
+  const summaryRows = await loadValuesForPeriods({
+    geoLevel: summarySourceLevel,
+    indicatorCode: ind.code,
     periodLabels: [periodRow.label, prevMonthLabel(periodRow.label)].filter(Boolean),
+    isNegative: !!ind.is_negative,
   });
-  const distCurrent = districtComposite.filter((r) => r.period === periodRow.label);
-  const distScores = distCurrent
+  let summaryCurrent = summaryRows.filter((r) => r.period === periodRow.label);
+  if (geoLevel === 'block' && resolvedDistrict) {
+    const distKey = normalizeGeoName(resolvedDistrict).toLowerCase();
+    summaryCurrent = summaryCurrent.filter(
+      (r) => normalizeGeoName(r.district_name || '').toLowerCase() === distKey
+    );
+  } else if (geoLevel === 'district' && (divCode || division)) {
+    const allowed = new Set(
+      districtMaster
+        .filter((d) => {
+          if (divCode && String(d.div_code) === String(divCode)) return true;
+          if (
+            division &&
+            normalizeGeoName(d.division_name) === normalizeGeoName(division)
+          ) {
+            return true;
+          }
+          return false;
+        })
+        .map((d) => d.district_name.toLowerCase())
+    );
+    if (allowed.size) {
+      summaryCurrent = summaryCurrent.filter((r) =>
+        allowed.has(String(r.geo_name || '').toLowerCase())
+      );
+    }
+  }
+  const distScores = summaryCurrent
     .map((r) => ({ name: r.geo_name, score: num(r.value), rank: r.rank }))
     .filter((r) => r.score != null)
     .sort((a, b) => b.score - a.score);
 
   const prevLabel = prevMonthLabel(periodRow.label);
-  // Screenshot compares avg vs Apr — use previous month if available, else 2 months back
   const compareLabel = prevLabel;
-  const distPrev = districtComposite.filter((r) => r.period === compareLabel);
+  let summaryPrev = summaryRows.filter((r) => r.period === compareLabel);
+  if (geoLevel === 'block' && resolvedDistrict) {
+    const distKey = normalizeGeoName(resolvedDistrict).toLowerCase();
+    summaryPrev = summaryPrev.filter(
+      (r) => normalizeGeoName(r.district_name || '').toLowerCase() === distKey
+    );
+  }
   const avgNow = avg(distScores.map((d) => d.score));
-  const avgPrev = avg(distPrev.map((r) => num(r.value)));
+  const avgPrev = avg(summaryPrev.map((r) => num(r.value)));
   const avgChange =
     avgNow != null && avgPrev != null ? roundScore(avgNow - avgPrev, true) : null;
 
+  const entityLabel = geoLevel === 'block' ? 'blocks' : 'districts';
   const summary = {
     total_districts: distScores.length,
+    total_entities: distScores.length,
+    entity_level: geoLevel === 'block' ? 'block' : 'district',
     top_district: distScores[0]
       ? { name: distScores[0].name, score: roundScore(distScores[0].score, isComposite) }
       : null,
@@ -775,37 +1262,65 @@ async function getDeepDiveDashboard({
     average_score: roundScore(avgNow, isComposite),
     average_change: avgChange,
     average_change_vs_period: compareLabel,
+    note: `Summary over ${distScores.length} ${entityLabel}`,
   };
 
-  // Indicator options for dropdown
+  // Indicator options for dropdown (from outcome master indicators)
   const { rows: indOpts } = await query(
     `
-    SELECT DISTINCT i.code, i.short_name, i.name, i.unit, i.is_composite, i.sort_order
-    FROM ranking_indicator i
-    JOIN ranking_value v ON v.indicator_id = i.id
-    WHERE v.geo_level = $1 AND i.is_active = TRUE
-    ORDER BY i.sort_order
-    `,
-    [geoLevel]
+    SELECT code, short_name, name, unit, FALSE AS is_composite, sno AS sort_order
+    FROM indicator
+    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
+    ORDER BY sno NULLS LAST, code
+    `
   );
-  const indicator_options = indOpts.map((r) => ({
-    code: r.code,
-    name: r.short_name || r.name,
-    unit: r.unit,
-    is_composite: r.is_composite,
-  }));
+  const indicator_options = [
+    {
+      code: 'RANK_COMPOSITE',
+      name: 'Overall composite score',
+      short_name: 'Overall composite score',
+      unit: 'index',
+      is_composite: true,
+    },
+    ...indOpts.map((r) => ({
+      code: r.code,
+      name: r.short_name || r.name,
+      short_name: r.short_name || r.name,
+      unit: r.unit,
+      is_composite: false,
+    })),
+  ];
 
   const breakup = await buildIndicatorBreakup({
     periodRow,
     fyLabels,
     division,
-    district,
-    block,
+    district: resolvedDistrict,
+    block: resolvedBlockName,
     divCode,
     districtMaster,
+    filter: filterKey,
   });
   const breakupTitle = breakup.breakup_scope;
   const indicator_breakup = breakup.indicator_breakup;
+  const indicators = mapBreakupToIndicators(indicator_breakup);
+  const { by_type, by_domain } = groupIndicatorsForSummary(indicators);
+  const shapedBreakup = shapeBreakupPanel({
+    indicator_breakup,
+    by_type,
+    by_domain,
+    breakupTabRaw: breakupTab,
+  });
+
+  // SUMMARY panel groups (panel_tab) — separate from table breakup_tab
+  const summaryGroups = { by_type, by_domain };
+
+  const tabLabel =
+    geoLevel === 'division'
+      ? 'By Division'
+      : geoLevel === 'block'
+        ? 'By Block'
+        : 'By District';
 
   return {
     view: uiView,
@@ -813,16 +1328,13 @@ async function getDeepDiveDashboard({
     geo_level: geoLevel,
     level: geoLevel,
     table_mode: geoLevel,
-    tab: geoLevel === 'division' ? 'By Division' : 'By District',
+    tab: tabLabel,
     period: periodRow.label,
     period_display: periodRow.display,
     panel_tab: panel,
     labels: showLabels,
     filter: filterKey,
-    filter_note:
-      filterKey === 'high_priority'
-        ? 'high_priority district master list not configured yet'
-        : null,
+    filter_note,
     analytics: {
       compare,
       mode,
@@ -834,7 +1346,13 @@ async function getDeepDiveDashboard({
       name: ind.short_name || ind.name,
       unit: ind.unit,
       is_composite: ind.is_composite,
+      has_block_values: indicatorHasBlockValues !== false,
     },
+    indicator_has_block_values: indicatorHasBlockValues !== false,
+    missing_block_values_message:
+      indicatorHasBlockValues === false
+        ? 'No block-level values for this indicator in the outcome cache; block rows listed with empty scores.'
+        : null,
     trend_from: trendLabels[0] || null,
     trend_to: trendLabels[trendLabels.length - 1] || null,
     fy_periods: fyLabels,
@@ -843,22 +1361,21 @@ async function getDeepDiveDashboard({
     rankings,
     ranking: rankings,
     count: rankings.length,
-    hierarchy: geoLevel === 'division' ? ['division', 'district', 'block'] : ['district', 'block'],
+    hierarchy:
+      geoLevel === 'division'
+        ? ['division', 'district', 'block']
+        : geoLevel === 'block'
+          ? ['block']
+          : ['district', 'block'],
     breakup_scope: breakupTitle,
-    indicator_breakup,
-    // panel_tab=indicators → same rows as map SUMMARY BY INDICATORS style
-    indicators: indicator_breakup.map((r) => ({
-      code: r.code,
-      name: r.indicator,
-      unit: r.unit,
-      value: r.monthly,
-      display_value: r.monthly_display,
-      up_avg: r.up_avg,
-      up_avg_display: r.up_avg_display,
-      best_perf: r.best_perf,
-      fy: r.fy,
-      fy_display: r.fy_display,
-    })),
+    breakup_geo_level: breakup.breakup_geo_level,
+    summary_scope: breakup.breakup_geo_level || (resolvedDistrict ? 'district' : 'state'),
+    district: resolvedDistrict || null,
+    block: resolvedBlockName || null,
+    ...shapedBreakup,
+    // left SUMMARY tabs (panel_tab) — independent of breakup_tab
+    indicators,
+    ...summaryGroups,
     indicator_options,
   };
 }
