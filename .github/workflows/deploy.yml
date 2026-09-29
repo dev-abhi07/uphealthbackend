@@ -1,0 +1,36 @@
+name: Deploy Node Application
+
+# This triggers the action when you push to the 'main' branch
+on:
+  push:
+    branches:
+      - development 
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH into server and deploy
+        uses: appleboy/ssh-action@development
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # The script to run on your server
+          script: |
+            git config --global --add safe.directory /var/www/html/upranking.demoquaeretech.in/api
+            cd /var/www/html/upranking.demoquaeretech.in/api
+             
+            git checkout development
+            git fetch origin
+            git reset --hard origin/development
+             
+            echo "CURRENT GIT STATUS ON SERVER:"
+            git log -1 --oneline
+            
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            export PATH=$PATH:/usr/local/bin:/usr/bin
+            
+            npm install
+            pm2 restart upranking
