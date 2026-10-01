@@ -16,6 +16,7 @@ const {
   enforceQueryGeoScope,
   filterRankingsByScope,
   scopeMeta,
+  normalizeName,
 } = require('../services/geoScopeService');
 const { asyncHandler } = require('../middleware/errorHandler');
 
@@ -30,22 +31,154 @@ async function withUserScope(req) {
   return scope;
 }
 
+function isScopedGeoUser(scope) {
+  return Boolean(scope && !scope.isStateAdmin && !scope.unrestricted);
+}
+
+/** Recompute top/bottom + MoM change cards from scoped ranking (same response keys). */
+function recomputeExecutiveCards(data, topN = 3) {
+  if (!data || !Array.isArray(data.ranking) || !data.ranking.length) return data;
+  const byBestRank = [...data.ranking].sort(
+    (a, b) => (Number(a.rank) || 9999) - (Number(b.rank) || 9999)
+  );
+  data.top_performers = byBestRank.slice(0, topN);
+  data.bottom_performers = [...byBestRank]
+    .sort((a, b) => (Number(b.rank) || 0) - (Number(a.rank) || 0))
+    .slice(0, topN)
+    .reverse();
+
+  const withChange = (data.performance_change || []).filter((r) => r.change != null);
+  const toChangeCard = (r) => {
+    const hist = Array.isArray(r.history) ? r.history : [];
+    const current = hist[hist.length - 1] || null;
+    const previous = hist.length >= 2 ? hist[hist.length - 2] : null;
+    return {
+      name: r.name,
+      short_name: r.short_name,
+      change: r.change,
+      previous: previous
+        ? {
+            period: previous.period,
+            period_display: previous.period_display,
+            value: previous.value,
+          }
+        : null,
+      current: {
+        period: current?.period || null,
+        period_display: current?.period_display || null,
+        value: r.score,
+      },
+    };
+  };
+  data.highest_increase = [...withChange]
+    .sort((a, b) => Number(b.change) - Number(a.change))
+    .slice(0, topN)
+    .map(toChangeCard);
+  data.lowest_decrease = [...withChange]
+    .sort((a, b) => Number(a.change) - Number(b.change))
+    .slice(0, topN)
+    .map(toChangeCard);
+
+  // Re-paint TOP/BOTTOM bar colors after geo scope (TOP always green)
+  if (Array.isArray(data.performance_change) && data.performance_change.length) {
+    const byRank = [...data.performance_change].sort(
+      (a, b) => (Number(a.rank) || 9999) - (Number(b.rank) || 9999)
+    );
+    const topSet = new Set(byRank.slice(0, topN).map((r) => r.name));
+    const bottomSet = new Set(byRank.slice(-topN).map((r) => r.name));
+    data.performance_change = data.performance_change.map((r) => {
+      let color_band = 'moderate';
+      if (topSet.has(r.name)) color_band = 'top';
+      else if (bottomSet.has(r.name)) color_band = 'bottom';
+      const color =
+        color_band === 'top'
+          ? '#1f9d55'
+          : color_band === 'bottom'
+            ? '#d62828'
+            : '#f0a202';
+      return { ...r, band: color_band, color_band, color };
+    });
+  }
+  return data;
+}
+
 function attachScopedRankings(data, scope, geoLevel) {
   if (!data || typeof data !== 'object') return data;
+  const parentLevel = data.content_geo_level || geoLevel;
   if (Array.isArray(data.rankings)) {
-    data.rankings = filterRankingsByScope(data.rankings, scope, geoLevel);
+    data.rankings = filterRankingsByScope(data.rankings, scope, parentLevel);
   }
   if (Array.isArray(data.ranking)) {
-    data.ranking = filterRankingsByScope(data.ranking, scope, geoLevel);
+    data.ranking = filterRankingsByScope(data.ranking, scope, parentLevel);
     data.count = data.ranking.length;
+  }
+
+  // Executive summary extras
+  if (data.map && Array.isArray(data.map.ranking)) {
+    data.map.ranking = filterRankingsByScope(data.map.ranking, scope, parentLevel);
+  }
+  if (Array.isArray(data.district_ranking)) {
+    data.district_ranking = filterRankingsByScope(
+      data.district_ranking,
+      scope,
+      'district'
+    );
+  }
+  if (Array.isArray(data.division_ranking)) {
+    data.division_ranking = filterRankingsByScope(
+      data.division_ranking,
+      scope,
+      'division'
+    );
+  }
+  if (Array.isArray(data.block_ranking)) {
+    data.block_ranking = filterRankingsByScope(data.block_ranking, scope, 'block');
+  }
+  if (Array.isArray(data.child_ranking)) {
+    const childLevel =
+      data.child_geo_level ||
+      (parentLevel === 'division' ? 'district' : parentLevel === 'district' ? 'block' : parentLevel);
+    data.child_ranking = filterRankingsByScope(
+      data.child_ranking,
+      scope,
+      childLevel
+    );
+    data.child_count = data.child_ranking.length;
+  }
+  if (Array.isArray(data.areas)) {
+    data.areas = filterRankingsByScope(data.areas, scope, parentLevel).map((area) => {
+      const childLevel = data.child_geo_level || 'block';
+      const children = data.child_geo_level
+        ? filterRankingsByScope(area.children || [], scope, childLevel)
+        : [];
+      return { ...area, children, children_count: children.length };
+    });
+  }
+  if (Array.isArray(data.performance_change)) {
+    data.performance_change = filterRankingsByScope(
+      data.performance_change,
+      scope,
+      parentLevel
+    );
+  }
+  if (Array.isArray(data.child_performance_change)) {
+    const childLevel = data.child_geo_level || 'block';
+    data.child_performance_change = filterRankingsByScope(
+      data.child_performance_change,
+      scope,
+      childLevel
+    );
+  }
+
+  // Division/district login: top/bottom 3 + change cards from scoped geo only
+  if (isScopedGeoUser(scope)) {
+    recomputeExecutiveCards(data, 3);
   }
 
   // Keep gauge / overall in sync with scoped ranking (division avg of districts)
   // Do not overwrite when summary is already district/block-selected.
   if (
-    scope &&
-    !scope.isStateAdmin &&
-    !scope.unrestricted &&
+    isScopedGeoUser(scope) &&
     Array.isArray(data.ranking) &&
     data.ranking.length &&
     data.summary_scope !== 'district' &&
@@ -99,11 +232,12 @@ async function dashboard(req, res) {
   //      &district_id=auraiya&block_id=auraiya__erwa-katra&area_id=auraiya__erwa-katra
   if (uiView === 'analytics') {
     const data = await runAnalyticsFromQuery(req.query);
+    // Always keep indicators + by_type + by_domain (same grouping as map SUMMARY)
     return res.json({
       success: true,
       ...applyPanelTabShape(
         attachScopedRankings(data, scope, rawLevel),
-        req.query.panel_tab,
+        'all',
         { defaultTab: 'all' }
       ),
     });
@@ -133,12 +267,13 @@ async function dashboard(req, res) {
     const data = await rankingExecutiveSummaryService.getExecutiveSummary({
       period: req.query.period || req.query.analytics_period,
       level,
+      scope,
       topN: req.query.top_n ? Number(req.query.top_n) : 3,
       historyMonths: req.query.history_months ? Number(req.query.history_months) : 3,
     });
     return res.json({
       success: true,
-      ...attachScopedRankings(data, scope, level),
+      ...attachScopedRankings(data, scope, data.content_geo_level || level),
       user_scope: scopeMeta(scope),
     });
   }
@@ -799,31 +934,41 @@ async function executiveSummary(req, res) {
   const data = await rankingExecutiveSummaryService.getExecutiveSummary({
     period: req.query.period || req.query.analytics_period,
     level,
+    scope,
     topN: req.query.top_n ? Number(req.query.top_n) : 3,
     historyMonths: req.query.history_months ? Number(req.query.history_months) : 3,
   });
+  const scopeGeo = data.content_geo_level || level;
   res.json({
     success: true,
-    ...attachScopedRankings(data, scope, level),
+    ...attachScopedRankings(data, scope, scopeGeo),
   });
 }
 
 async function rankInsights(req, res) {
-  const mode = String(req.query.mode || req.query.level || 'division').toLowerCase();
+  const scope = await withUserScope(req);
+  let mode = String(req.query.mode || req.query.level || 'division').toLowerCase();
+  if (scope?.level === 'district' || scope?.level === 'block') mode = 'district';
+  else if (scope?.level === 'division') mode = 'division';
   const data = await rankingExecutiveInsightsService.getRankInsights({
     period: req.query.period || req.query.analytics_period,
     mode,
+    scope,
   });
-  res.json({ success: true, ...data });
+  res.json({ success: true, ...data, user_scope: scopeMeta(scope) });
 }
 
 async function indicatorPerformance(req, res) {
-  const mode = String(req.query.mode || req.query.level || 'district').toLowerCase();
+  const scope = await withUserScope(req);
+  let mode = String(req.query.mode || req.query.level || 'district').toLowerCase();
+  if (scope?.level === 'district' || scope?.level === 'block') mode = 'district';
+  else if (scope?.level === 'division') mode = 'division';
   const data = await rankingExecutiveInsightsService.getIndicatorPerformanceMatrix({
     period: req.query.period || req.query.analytics_period,
     mode,
+    scope,
   });
-  res.json({ success: true, ...data });
+  res.json({ success: true, ...data, user_scope: scopeMeta(scope) });
 }
 
 async function importFile(req, res) {

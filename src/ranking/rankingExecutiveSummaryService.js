@@ -1,14 +1,18 @@
 /**
- * UP Health Executive Summary — division (or district) performance snapshot.
- * UI: Top/Bottom 3, narrative, key indicators, map ranks, MoM change charts.
- * Data: indicator_outcome_district (+ division rollup). No ranking_value.
+ * UP Health Executive Summary — performance snapshot.
+ * State/sysadmin: division tab → divisions; district tab → districts.
+ * Division login: districts in that division.
+ * District login: blocks in that district.
+ * Data: indicator_outcome_* cache. No ranking_value.
  */
+const { query } = require('../db/pool');
 const {
   resolveOutcomePeriod,
   listOutcomePeriodLabels,
   loadCompositeByPeriod,
   loadStatewideIndicatorAvgs,
 } = require('../outcome/outcomeRankingQueries');
+const { normalizeGeoName } = require('./rankingNameNormalize');
 
 function num(v) {
   if (v === null || v === undefined) return null;
@@ -72,7 +76,6 @@ async function resolvePeriod(period) {
 }
 
 function pickBestWorstIndicators(indicators, n = 3) {
-  // Score: higher = better performance for ranking "best"
   const scored = indicators
     .filter((i) => i.value != null)
     .map((i) => ({
@@ -87,9 +90,8 @@ function pickBestWorstIndicators(indicators, n = 3) {
     full_name: i.full_name,
     unit: i.unit,
     value: i.value,
-    display_value:
-      i.unit === 'percent' ? `${i.value}%` : i.value,
-    sentiment, // positive | negative
+    display_value: i.unit === 'percent' ? `${i.value}%` : i.value,
+    sentiment,
   });
   return {
     best_indicators: byBest.slice(0, n).map((i) => mapRow(i, 'positive')),
@@ -118,9 +120,6 @@ function formatGeoList(areas, levelLabel) {
     .join(', ');
 }
 
-/**
- * Screenshot-style multi-paragraph executive narrative (dynamic from rankings).
- */
 function buildNarrative({
   bestIndicators = [],
   topAreas = [],
@@ -159,7 +158,6 @@ function buildNarrative({
     );
   }
 
-  // Least performing: worst rank first (matches screenshot ordering).
   const bottomSorted = [...(bottomAreas || [])].sort(
     (a, b) => (Number(b.rank) || 0) - (Number(a.rank) || 0)
   );
@@ -173,21 +171,178 @@ function buildNarrative({
   return paragraphs.join('\n\n') || null;
 }
 
+function buildMetaList(currentRows) {
+  const total = currentRows.length;
+  return currentRows.map((r, idx) => {
+    const rank = r.rank != null ? r.rank : idx + 1;
+    return {
+      name: r.name,
+      short_name: shortGeoName(r.name),
+      score: round(r.value, 2),
+      rank,
+      band: bandForRank(rank, total),
+      district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+      block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+      district_name: r.district_name || null,
+      division_name: r.division_name || null,
+      division_id: r.division_id != null ? Number(r.division_id) : null,
+      geo_level: r.geo_level || null,
+    };
+  });
+}
+
+function buildPerformanceChange(
+  withMeta,
+  allComposite,
+  availableHistory,
+  periodLabel,
+  prevLabel,
+  imported
+) {
+  const byNamePeriod = new Map();
+  for (const r of allComposite) {
+    if (!byNamePeriod.has(r.name)) byNamePeriod.set(r.name, new Map());
+    byNamePeriod.get(r.name).set(r.period, r.value);
+  }
+  const rows = withMeta.map((r) => {
+    const seriesMap = byNamePeriod.get(r.name) || new Map();
+    const history = availableHistory.map((pl) => ({
+      period: pl,
+      period_display: displayPeriod(pl),
+      period_short: displayPeriod(pl).replace(
+        /(\w+)\s+(\d{4})/,
+        (_, m, y) => `${m.slice(0, 3)} ${y.slice(2)}`
+      ),
+      value: round(seriesMap.get(pl), 2),
+    }));
+    const cur = seriesMap.get(periodLabel);
+    const prev = prevLabel && imported.has(prevLabel) ? seriesMap.get(prevLabel) : null;
+    const change = cur != null && prev != null ? round(cur - prev, 2) : null;
+    return {
+      rank: r.rank,
+      name: r.name,
+      short_name: r.short_name,
+      score: r.score,
+      district_name: r.district_name || null,
+      division_name: r.division_name || null,
+      change,
+      change_display: change == null ? null : change >= 0 ? `+${change}` : `${change}`,
+      trend: change == null ? null : change > 0 ? 'up' : change < 0 ? 'down' : 'same',
+      history,
+    };
+  });
+  // TOP 3 (best rank) always green; BOTTOM 3 always red — independent of statewide band
+  return paintPerformanceChangeTiers(rows, 3);
+}
+
+const TIER_COLORS = {
+  top: '#1f9d55',
+  moderate: '#f0a202',
+  bottom: '#d62828',
+};
+
+/** Color TOP/BOTTOM panels by list position (not statewide rank thirds). */
+function paintPerformanceChangeTiers(rows, topN = 3) {
+  if (!Array.isArray(rows) || !rows.length) return rows || [];
+  const byRank = [...rows].sort(
+    (a, b) => (Number(a.rank) || 9999) - (Number(b.rank) || 9999)
+  );
+  const topSet = new Set(byRank.slice(0, topN).map((r) => r.name));
+  const bottomSet = new Set(byRank.slice(-topN).map((r) => r.name));
+  return rows.map((r) => {
+    let color_band = 'moderate';
+    if (topSet.has(r.name)) color_band = 'top';
+    else if (bottomSet.has(r.name)) color_band = 'bottom';
+    return {
+      ...r,
+      band: color_band,
+      color_band,
+      color: TIER_COLORS[color_band],
+    };
+  });
+}
+
+async function loadDistrictDivisionLookup() {
+  const { rows } = await query(
+    `
+    SELECT d.name AS district_name,
+           d.lgd_code AS district_lgd,
+           div.id AS division_id,
+           div.name AS division_name,
+           div.code AS division_code
+    FROM district d
+    JOIN division div ON div.id = d.division_id
+    WHERE d.is_active = TRUE
+    `
+  );
+  const byName = new Map();
+  const byLgd = new Map();
+  for (const r of rows) {
+    const meta = {
+      division_id: Number(r.division_id),
+      division_name: r.division_name,
+      division_code: r.division_code != null ? String(r.division_code) : null,
+      district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+    };
+    byName.set(normalizeGeoName(r.district_name).toLowerCase(), meta);
+    if (r.district_lgd != null) byLgd.set(Number(r.district_lgd), meta);
+  }
+  return { byName, byLgd };
+}
+
+function enrichDistrictRows(rows, lookup) {
+  return (rows || []).map((r) => {
+    const meta =
+      (r.district_lgd != null && lookup.byLgd.get(Number(r.district_lgd))) ||
+      lookup.byName.get(normalizeGeoName(r.name).toLowerCase()) ||
+      null;
+    return {
+      ...r,
+      geo_level: 'district',
+      division_id: meta?.division_id || null,
+      division_name: meta?.division_name || null,
+      division_code: meta?.division_code || null,
+    };
+  });
+}
+
 /**
  * @param {object} opts
- * @param {string} [opts.period] YYYY-MM
+ * @param {string} [opts.period]
  * @param {'division'|'district'} [opts.level]
+ * @param {object|null} [opts.scope] user geo scope
  * @param {number} [opts.topN]
  * @param {number} [opts.historyMonths]
  */
+function isStatewideScope(scope) {
+  return !scope || scope.isStateAdmin || scope.unrestricted;
+}
+
+/** Tab → content geo. Statewide matches tab; scoped users see one level down. */
+function resolveContentGeo(viewLevel, scope) {
+  if (isStatewideScope(scope)) {
+    return viewLevel === 'district' ? 'district' : 'division';
+  }
+  if (scope.level === 'division') return 'district';
+  return 'block';
+}
+
+function contentLevelLabel(primaryGeo) {
+  if (primaryGeo === 'block') return 'Block';
+  if (primaryGeo === 'district') return 'District';
+  return 'Division';
+}
+
 async function getExecutiveSummary({
   period,
   level = 'division',
+  scope = null,
   topN = 3,
   historyMonths = 3,
 } = {}) {
-  const geoLevel = level === 'district' ? 'district' : 'division';
-  const levelLabel = geoLevel === 'division' ? 'Division' : 'District';
+  const viewLevel = level === 'district' ? 'district' : 'division';
+  const primaryGeo = resolveContentGeo(viewLevel, scope);
+  const levelLabel = contentLevelLabel(primaryGeo);
   const periodRow = await resolvePeriod(period);
   if (!periodRow) {
     return {
@@ -195,7 +350,9 @@ async function getExecutiveSummary({
       has_data: false,
       message: 'No outcome periods synced yet. POST /api/ranking/outcome/district/sync',
       period: period || null,
-      level: geoLevel,
+      level: viewLevel,
+      content_geo_level: primaryGeo,
+      child_geo_level: null,
     };
   }
 
@@ -207,41 +364,51 @@ async function getExecutiveSummary({
   const imported = new Set(importedLabels);
   const availableHistory = historyLabels.filter((l) => imported.has(l));
 
-  const allComposite = await loadCompositeByPeriod(geoLevel, loadLabels);
+  let allComposite;
+  if (primaryGeo === 'district') {
+    const distLookup = await loadDistrictDivisionLookup();
+    allComposite = enrichDistrictRows(
+      await loadCompositeByPeriod('district', loadLabels),
+      distLookup
+    );
+  } else if (primaryGeo === 'block') {
+    allComposite = (await loadCompositeByPeriod('block', loadLabels)).map((r) => ({
+      ...r,
+      geo_level: 'block',
+    }));
+  } else {
+    allComposite = (await loadCompositeByPeriod('division', loadLabels)).map((r) => ({
+      ...r,
+      geo_level: 'division',
+    }));
+  }
+
   const current = allComposite
     .filter((r) => r.period === periodRow.label && r.value != null)
     .sort((a, b) => {
       if (a.rank != null && b.rank != null) return a.rank - b.rank;
       return b.value - a.value;
-    });
+    })
+    .map((r) => ({ ...r, geo_level: primaryGeo }));
 
   if (!current.length) {
     return {
       view: 'executive_summary',
       has_data: false,
-      message: `No ${geoLevel} composite data for ${periodRow.label}`,
+      message: `No ${primaryGeo} composite data for ${periodRow.label}`,
       period: periodRow.label,
       period_display: displayPeriod(periodRow.label),
-      level: geoLevel,
+      level: viewLevel,
+      content_geo_level: primaryGeo,
+      child_geo_level: null,
     };
   }
 
-  const total = current.length;
-  const withMeta = current.map((r, idx) => {
-    const rank = r.rank != null ? r.rank : idx + 1;
-    return {
-      name: r.name,
-      short_name: shortGeoName(r.name),
-      score: round(r.value, 2),
-      rank,
-      band: bandForRank(rank, total),
-    };
-  });
-
+  const withMeta = buildMetaList(current);
+  const total = withMeta.length;
   const top_3 = withMeta.slice(0, topN);
   const bottom_3 = [...withMeta].sort((a, b) => b.rank - a.rank).slice(0, topN).reverse();
 
-  // Key indicators (statewide district averages)
   const indicatorAvgs = await loadStatewideIndicatorAvgs(periodRow.label);
   const { best_indicators, worst_indicators } = pickBestWorstIndicators(indicatorAvgs, topN);
 
@@ -252,50 +419,36 @@ async function getExecutiveSummary({
     levelLabel,
   });
 
-  // Map + full ranking list
   const map_ranking = withMeta.map((r) => ({
     ...r,
-    color_band: r.band, // top | moderate | bottom
+    color_band: r.band,
   }));
 
-  // Performance change: last N months + MoM delta
-  const byNamePeriod = new Map();
-  for (const r of allComposite) {
-    if (!byNamePeriod.has(r.name)) byNamePeriod.set(r.name, new Map());
-    byNamePeriod.get(r.name).set(r.period, r.value);
-  }
+  const performance_change = buildPerformanceChange(
+    withMeta,
+    allComposite,
+    availableHistory,
+    periodRow.label,
+    prevLabel,
+    imported
+  );
 
-  const performance_change = withMeta.map((r) => {
-    const seriesMap = byNamePeriod.get(r.name) || new Map();
-    const history = availableHistory.map((pl) => ({
-      period: pl,
-      period_display: displayPeriod(pl),
-      period_short: displayPeriod(pl).replace(/(\w+)\s+(\d{4})/, (_, m, y) => `${m.slice(0, 3)} ${y.slice(2)}`),
-      value: round(seriesMap.get(pl), 2),
-    }));
-    const cur = seriesMap.get(periodRow.label);
-    const prev = prevLabel && imported.has(prevLabel) ? seriesMap.get(prevLabel) : null;
-    const change =
-      cur != null && prev != null ? round(cur - prev, 2) : null;
-    return {
-      rank: r.rank,
-      name: r.name,
-      short_name: r.short_name,
-      score: r.score,
-      change,
-      change_display: change == null ? null : change >= 0 ? `+${change}` : `${change}`,
-      trend: change == null ? null : change > 0 ? 'up' : change < 0 ? 'down' : 'same',
-      history,
-    };
-  });
+  const areas = map_ranking.map((row) => ({
+    ...row,
+    children_count: 0,
+    children: [],
+  }));
 
-  // Highest increase / lowest decrease vs previous month
   const withChange = performance_change.filter((r) => r.change != null);
   const highest_increase = [...withChange]
     .sort((a, b) => b.change - a.change)
     .slice(0, topN)
     .map((r) => {
-      const seriesMap = byNamePeriod.get(r.name) || new Map();
+      const seriesMap = new Map(
+        (allComposite || [])
+          .filter((x) => x.name === r.name)
+          .map((x) => [x.period, x.value])
+      );
       return {
         name: r.name,
         short_name: r.short_name,
@@ -317,7 +470,11 @@ async function getExecutiveSummary({
     .sort((a, b) => a.change - b.change)
     .slice(0, topN)
     .map((r) => {
-      const seriesMap = byNamePeriod.get(r.name) || new Map();
+      const seriesMap = new Map(
+        (allComposite || [])
+          .filter((x) => x.name === r.name)
+          .map((x) => [x.period, x.value])
+      );
       return {
         name: r.name,
         short_name: r.short_name,
@@ -336,19 +493,19 @@ async function getExecutiveSummary({
     });
 
   const history_legend = availableHistory.map((pl, idx) => {
-    // Screenshot: green = current, blue = prev, gray = older
     const colors = ['#9e9e9e', '#1976d2', '#43a047'];
     const color = colors[Math.min(idx, colors.length - 1)];
-    // Prefer green for latest
     const isLatest = pl === periodRow.label;
     return {
       period: pl,
       label: displayPeriod(pl),
-      short_label: displayPeriod(pl).replace(/(\w+)\s+(\d{4})/, (_, m, y) => `${m.slice(0, 3)} ${y.slice(2)}`),
+      short_label: displayPeriod(pl).replace(
+        /(\w+)\s+(\d{4})/,
+        (_, m, y) => `${m.slice(0, 3)} ${y.slice(2)}`
+      ),
       color: isLatest ? '#43a047' : color,
     };
   });
-  // Fix legend colors: oldest gray, middle blue, latest green
   if (history_legend.length >= 3) {
     history_legend[0].color = '#9e9e9e';
     history_legend[1].color = '#1976d2';
@@ -363,7 +520,10 @@ async function getExecutiveSummary({
   return {
     view: 'executive_summary',
     has_data: true,
-    level: geoLevel,
+    level: viewLevel,
+    content_geo_level: primaryGeo,
+    child_geo_level: null,
+    child_level_label: null,
     period: periodRow.label,
     period_display: displayPeriod(periodRow.label),
     previous_period: prevLabel && imported.has(prevLabel) ? prevLabel : null,
@@ -373,6 +533,7 @@ async function getExecutiveSummary({
     history_legend,
     missing_history_periods: historyLabels.filter((l) => !imported.has(l)),
     count: total,
+    child_count: 0,
     narrative,
     narrative_badge: displayPeriod(periodRow.label),
     top_performers: top_3,
@@ -381,10 +542,16 @@ async function getExecutiveSummary({
       positive: best_indicators,
       negative: worst_indicators,
     },
+    ranking: map_ranking,
+    rankings: map_ranking,
     map: {
-      geo_level: geoLevel,
+      geo_level: primaryGeo,
       ranking: map_ranking,
     },
+    areas,
+    division_ranking: primaryGeo === 'division' ? map_ranking : undefined,
+    district_ranking: primaryGeo === 'district' ? map_ranking : undefined,
+    block_ranking: primaryGeo === 'block' ? map_ranking : undefined,
     performance_change,
     highest_increase,
     lowest_decrease,
@@ -405,6 +572,5 @@ async function getExecutiveSummary({
 
 module.exports = {
   getExecutiveSummary,
-  /** @deprecated outcome indicators use is_negative; kept for insights import */
   LOWER_IS_BETTER: new Set(),
 };

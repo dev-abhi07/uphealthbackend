@@ -43,8 +43,18 @@ Auth: `Authorization: Bearer <token>`
 | GET | `/api/ranking/analytics?period_from=2026-05&period_to=2026-06` | Overall Composite Score analytics |
 | GET | `/api/ranking/trend?level=district&from_period=2026-01&to_period=2026-06&area_id=173` | Trend chart (primary + compare + UP avg) |
 | GET | `/api/ranking/trend?level=block&from_period=2026-01&to_period=2026-07&area_id=1329&block=Bakshi-Ka-Talab&compare_area_id=121&compare_name=Ambedkar+Nagar&indicator_code=IND004` | Block trend from `indicator_outcome_block` (compare may be block or district) |
-| GET | `/api/ranking/executive-summary?period=2026-06&level=division` | Executive Summary |
+| GET | `/api/ranking/executive-summary?period=2026-06&level=division` | Executive Summary — all districts only |
+| GET | `/api/ranking/executive-summary?period=2026-06&level=district` | Executive Summary — all blocks only |
 | GET | `/api/ranking/periods` | Outcome-synced months only |
+
+### Executive Summary response shape
+
+- **State / sysadmin**
+  - `level=division` → divisions (`content_geo_level=division`)
+  - `level=district` → districts (`content_geo_level=district`)
+- **Division login** → districts of that division (`content_geo_level=district`)
+- **District login** → blocks of that district (`content_geo_level=block`)
+- Same response keys; geo filtered by login. Rank-insights + indicator-performance follow the same rules.
 
 Optional filters:
 - `filter` — `all` (default) | `aspirational` | `high_priority`  

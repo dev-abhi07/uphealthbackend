@@ -1,6 +1,8 @@
 /**
  * Executive Summary bottom sections: Insights, Rank Movement, Indicator matrix.
- * Data from indicator_outcome_* (division rolled up from district).
+ * Division mode → district content; district mode → block content.
+ * Scoped logins filter to their division districts / district blocks (response shape unchanged).
+ * Data from indicator_outcome_*.
  */
 const { query } = require('../db/pool');
 const {
@@ -8,6 +10,7 @@ const {
   loadCompositeByPeriod: loadOutcomeComposite,
   loadIndicatorByPeriod,
 } = require('../outcome/outcomeRankingQueries');
+const { normalizeName } = require('../services/geoScopeService');
 
 function num(v) {
   if (v === null || v === undefined) return null;
@@ -87,6 +90,7 @@ async function loadCompositeByPeriod(geoLevel, periodLabels) {
     name: r.name,
     value: r.value,
     rank: r.rank,
+    district_name: r.district_name || null,
   }));
 }
 
@@ -97,13 +101,16 @@ function buildRankColumn(rows, period, total) {
     return (b.value ?? 0) - (a.value ?? 0);
   });
   return sorted.map((r, idx) => {
-    const rank = r.rank ?? idx + 1;
+    const stateRank = r.rank ?? idx + 1;
+    const rank = idx + 1; // dense 1..n within this column (chart / scoped list)
     return {
       areaId: geoKey(r.name),
       areaName: shortGeoName(r.name),
       rank,
+      state_rank: stateRank,
       score: round(r.value, 2),
       color: rankTierColor(rank, total),
+      district_name: r.district_name || null,
     };
   });
 }
@@ -288,52 +295,132 @@ function resolveTrend(delta, { lowerIsBetter = false, flatEps = 0.005 } = {}) {
   return improved ? 'up' : 'down';
 }
 
+/** Allowed area names for scoped login; null = statewide (no filter). */
+function allowedAreaNames(scope, contentGeo) {
+  if (!scope || scope.isStateAdmin || scope.unrestricted) return null;
+  if (contentGeo === 'district') {
+    if (scope.level === 'division') {
+      return new Set(
+        (scope.districtNamesInDivision || []).map((n) => normalizeName(n))
+      );
+    }
+    if (scope.level === 'district' || scope.level === 'block') {
+      return new Set([normalizeName(scope.districtName)].filter(Boolean));
+    }
+  }
+  if (contentGeo === 'block') {
+    if (scope.level === 'block') {
+      return new Set([normalizeName(scope.blockName)].filter(Boolean));
+    }
+    if (scope.level === 'district') {
+      return new Set(
+        (scope.blockNamesInDistrict || []).map((n) => normalizeName(n))
+      );
+    }
+    if (scope.level === 'division') {
+      // Division login on block content: all blocks under districts in that division
+      const districts = new Set(
+        (scope.districtNamesInDivision || []).map((n) => normalizeName(n))
+      );
+      return { type: 'block_by_district', districts };
+    }
+  }
+  return null;
+}
+
+function nameAllowed(name, allowed) {
+  if (!allowed) return true;
+  if (allowed instanceof Set) return allowed.has(normalizeName(name));
+  return true;
+}
+
+function filterCompositeByScope(rows, scope, contentGeo) {
+  const allowed = allowedAreaNames(scope, contentGeo);
+  if (!allowed) return rows;
+  if (allowed instanceof Set) {
+    return rows.filter((r) => nameAllowed(r.name, allowed));
+  }
+  if (allowed.type === 'block_by_district') {
+    return rows.filter((r) =>
+      allowed.districts.has(normalizeName(r.district_name || ''))
+    );
+  }
+  return rows;
+}
+
+function filterIndicatorRowsByScope(rows, scope, contentGeo) {
+  const allowed = allowedAreaNames(scope, contentGeo);
+  if (!allowed) return rows;
+  if (allowed instanceof Set) {
+    return rows.filter((r) => nameAllowed(r.areaName, allowed));
+  }
+  return rows;
+}
+
 /**
- * Insights + 3-month rank movement (division level for Sankey chart).
+ * Insights + 3-month rank movement.
+ * State/sysadmin: division → divisions; district → districts.
+ * Division login → districts; district login → blocks.
  */
-async function getRankInsights({ period, mode = 'division' } = {}) {
-  const geoLevel = mode === 'district' ? 'district' : 'division';
-  const levelLabel = geoLevel === 'division' ? 'Division' : 'District';
+async function getRankInsights({ period, mode = 'division', scope = null } = {}) {
+  const viewMode = mode === 'district' ? 'district' : 'division';
+  const statewide = !scope || scope.isStateAdmin || scope.unrestricted;
+  const contentGeo = statewide
+    ? viewMode === 'district'
+      ? 'district'
+      : 'division'
+    : scope.level === 'division'
+      ? 'district'
+      : 'block';
+  const levelLabel =
+    contentGeo === 'block' ? 'Block' : contentGeo === 'district' ? 'District' : 'Division';
   const periodRow = await resolvePeriod(period);
   if (!periodRow) {
     return {
       has_data: false,
       message: 'No outcome periods synced yet',
       period: period || null,
-      mode: geoLevel,
+      mode: viewMode,
+      content_geo_level: contentGeo,
     };
   }
 
   const periodKeys = trailingMonths(periodRow.label, 3);
   const prevLabel = prevMonthLabel(periodRow.label);
-  const compositeRows = await loadCompositeByPeriod('division', periodKeys);
-  const total = Math.max(
-    ...periodKeys.map((pl) => compositeRows.filter((r) => r.period === pl).length),
-    1
-  );
-  const columns = periodKeys.map((pl) => buildRankColumn(compositeRows, pl, total));
-  const rankInsights = buildRankInsights(columns, periodKeys, 'Division');
+  let compositeRows = await loadCompositeByPeriod(contentGeo, periodKeys);
+  compositeRows = filterCompositeByScope(compositeRows, scope, contentGeo);
 
-  const indicatorRows = await loadIndicatorMoM(
-    geoLevel,
+  const latestCount = compositeRows.filter(
+    (r) => r.period === periodRow.label
+  ).length;
+  const total = Math.max(latestCount, 1);
+  const columns = periodKeys.map((pl) => buildRankColumn(compositeRows, pl, total));
+  const colMax = Math.max(...columns.map((c) => c.length), total);
+  const rankInsights = buildRankInsights(columns, periodKeys, levelLabel);
+
+  let indicatorRows = await loadIndicatorMoM(
+    contentGeo,
     periodRow.label,
     prevLabel
   );
+  indicatorRows = filterIndicatorRowsByScope(indicatorRows, scope, contentGeo);
   const indicatorInsights = buildIndicatorInsights(indicatorRows, levelLabel);
 
   return {
     has_data: true,
     period: periodRow.label,
-    mode: geoLevel,
+    mode: viewMode,
+    content_geo_level: contentGeo,
     period_label: displayPeriod(periodRow.label),
     insights: {
       ...rankInsights,
       ...indicatorInsights,
     },
     rank_movement: {
+      geo_level: contentGeo,
       periods: periodKeys,
       period_labels: periodKeys.map(formatPeriodTick),
-      total,
+      total: colMax,
       columns,
     },
   };
@@ -348,6 +435,7 @@ async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
     out.push({
       period: r.period,
       geo_name: r.name,
+      district_name: r.district_name || null,
       rank: r.rank,
       value: r.value,
       code: 'RANK_COMPOSITE',
@@ -379,6 +467,7 @@ async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
       out.push({
         period: r.period,
         geo_name: r.name,
+        district_name: r.district_name || null,
         rank: r.rank,
         value: r.value,
         code: ind.code,
@@ -396,21 +485,45 @@ async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
 
 /**
  * Indicator × area matrix with MoM trend arrows.
+ * State/sysadmin: division → divisions; district → districts.
+ * Division login → districts; district login → blocks.
  */
-async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {}) {
-  const geoLevel = mode === 'division' ? 'division' : 'district';
+async function getIndicatorPerformanceMatrix({
+  period,
+  mode = 'district',
+  scope = null,
+} = {}) {
+  const viewMode = mode === 'division' ? 'division' : 'district';
+  const statewide = !scope || scope.isStateAdmin || scope.unrestricted;
+  const contentGeo = statewide
+    ? viewMode === 'division'
+      ? 'division'
+      : 'district'
+    : scope.level === 'division'
+      ? 'district'
+      : 'block';
   const periodRow = await resolvePeriod(period);
   if (!periodRow) {
     return {
       has_data: false,
       message: 'No outcome periods synced yet',
       period: period || null,
-      mode: geoLevel,
+      mode: viewMode,
+      content_geo_level: contentGeo,
     };
   }
 
   const prevLabel = prevMonthLabel(periodRow.label);
-  const rows = await loadMatrixData(geoLevel, periodRow.label, prevLabel);
+  let rows = await loadMatrixData(contentGeo, periodRow.label, prevLabel);
+
+  const allowed = allowedAreaNames(scope, contentGeo);
+  if (allowed instanceof Set) {
+    rows = rows.filter((r) => nameAllowed(r.geo_name, allowed));
+  } else if (allowed?.type === 'block_by_district') {
+    rows = rows.filter((r) =>
+      allowed.districts.has(normalizeName(r.district_name || ''))
+    );
+  }
 
   const areaMap = new Map();
   const indicatorMap = new Map();
@@ -461,7 +574,6 @@ async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {})
   const prevRankKey = (areaId) => `${areaId}::RANK_COMPOSITE::${prevLabel}`;
   rankRows.forEach((r) => {
     const areaId = geoKey(r.geo_name);
-    const prev = valueMap.get(prevRankKey(areaId));
     if (prevLabel) {
       const prevRow = rows.find(
         (x) =>
@@ -546,7 +658,8 @@ async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {})
   return {
     has_data: true,
     period: periodRow.label,
-    mode: geoLevel,
+    mode: viewMode,
+    content_geo_level: contentGeo,
     period_label: formatPeriodTick(periodRow.label),
     total_areas: areas.length,
     areas,

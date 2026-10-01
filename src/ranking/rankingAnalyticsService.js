@@ -9,6 +9,8 @@ const {
   TYPE_ORDER,
   DOMAIN_ORDER,
   groupIndicatorsForSummary,
+  resolveExcelDomainKey,
+  typeMeta,
 } = require('./rankingRegistry');
 const {
   listOutcomePeriodLabels,
@@ -530,6 +532,7 @@ async function loadIndicatorValues({
   geoLevel,
   periodLabels,
   geoName,
+  districtName = null,
   isNegative = false,
 }) {
   if (!periodLabels.length) return [];
@@ -573,11 +576,32 @@ async function loadIndicatorValues({
             String(r.name || '').toLowerCase() === String(geoName).toLowerCase() ||
             normalizeGeoName(r.name || '').toLowerCase() ===
               normalizeGeoName(geoName).toLowerCase();
-          // Prefer same district when block names collide
           if (!nameOk) return false;
+          if (districtName) {
+            const dn = normalizeGeoName(districtName).toLowerCase();
+            const rd = normalizeGeoName(r.district_name || '').toLowerCase();
+            if (rd && dn && rd !== dn) return false;
+          }
           return true;
         })
       : rows;
+    const hasValue = filtered.some((r) => r.value != null);
+    // Some indicators (e.g. Ayushman Bharat Digital Mission) are district-only
+    if (!hasValue && districtName) {
+      const distRows = await loadIndicatorValues({
+        indicatorCode: code,
+        geoLevel: 'district',
+        periodLabels,
+        geoName: districtName,
+        isNegative,
+      });
+      return distRows.map((r) => ({
+        ...r,
+        geo_name: geoName || r.geo_name,
+        district_name: districtName,
+        value_source: 'district_fallback',
+      }));
+    }
     return filtered.map((r) => ({
       period: r.period,
       value: r.value,
@@ -802,6 +826,7 @@ async function getAnalyticsDashboard({
       geoLevel: scope.geoLevel === 'state' ? 'state' : scope.geoLevel,
       periodLabels: queryMonths,
       geoName: scope.geoLevel === 'state' ? null : scope.geoName,
+      districtName: scope.districtName || null,
       isNegative: !!ind.is_negative,
     });
     const monthMap = new Map();
@@ -864,6 +889,15 @@ async function getAnalyticsDashboard({
     }
 
     const g = INDICATOR_GROUPING[ind.code] || {};
+    const resolvedDomain = resolveExcelDomainKey(
+      ind.domain_label,
+      ind.domain || g.domain
+    );
+    const typeKey = String(
+      ind.indicator_type || ind.type || g.type || ''
+    )
+      .trim()
+      .toLowerCase() || null;
     const chart = buildTrendChart({
       axisKeys,
       axisMode,
@@ -878,10 +912,13 @@ async function getAnalyticsDashboard({
       full_name: ind.name,
       unit: ind.unit,
       is_composite: !!ind.is_composite,
-      type: ind.indicator_type || ind.type || g.type || null,
-      indicator_type: ind.indicator_type || ind.type || g.type || null,
-      domain: ind.domain || g.domain || null,
-      domain_label: ind.domain_label || null,
+      type: typeKey,
+      indicator_type: typeKey,
+      type_label: typeKey ? typeMeta(typeKey).label : null,
+      // Excel Domain bifurcation (same as map SUMMARY)
+      domain: resolvedDomain.key,
+      domain_label: resolvedDomain.label,
+      domain_slug: ind.domain || g.domain || null,
       sort_order: ind.sort_order != null ? Number(ind.sort_order) : null,
       // Exact Excel values (2 dp) — Agra Jun INST_DEL=79.88, DH=36.16, etc.
       from_value: round(from_value),
@@ -928,23 +965,7 @@ async function getAnalyticsDashboard({
     (r.series || []).some((p) => p.value != null)
   );
 
-  const { by_type, by_domain } = groupIndicatorsForSummary(
-    indicatorRows.map((r) => ({
-      code: r.code,
-      name: r.full_name,
-      short_name: r.name,
-      unit: r.unit,
-      is_composite: false,
-      value: r.to_value,
-      display_value: r.to_display,
-      from_value: r.from_value,
-      to_value: r.to_value,
-      series: r.series,
-      up_avg_series: r.up_avg_series,
-      best_perf_series: r.best_perf_series,
-      chart: r.chart,
-    }))
-  );
+  const { by_type, by_domain } = groupIndicatorsForSummary(indicatorRows);
 
   const panel = String(panelTab || 'all').toLowerCase();
   const availableMonths = queryMonths;

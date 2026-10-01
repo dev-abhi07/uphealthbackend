@@ -2,6 +2,7 @@ const express = require('express');
 const { authenticate, authorize } = require('../middleware/auth');
 const adminUserController = require('../controllers/adminUserController');
 const tickerController = require('../controllers/tickerController');
+const userLogController = require('../controllers/userLogController');
 
 const router = express.Router();
 
@@ -25,6 +26,13 @@ router.get('/users/:id', adminUserController.getUser);
 router.put('/users/:id', adminUserController.updateUser);
 router.patch('/users/:id/active', adminUserController.setActive);
 router.post('/users/:id/reset-password', adminUserController.resetPassword);
+
+// User activity logs
+// summary / time-summary / user detail / user list
+router.get('/user-logs/summary', userLogController.summaryAdmin);
+router.get('/user-logs/time-summary', userLogController.timeSummaryAdmin);
+router.get('/user-logs/user/:userId', userLogController.userDetail);
+router.get('/user-logs', userLogController.listAdmin);
 
 // Ticker CRUD (create / update / delete / admin list) — system_admin only
 router.get('/tickers', tickerController.listAdmin);

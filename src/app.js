@@ -10,6 +10,8 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const rankingRoutes = require('./routes/rankingRoutes');
 const healthRankingRoutes = require('./routes/healthRankingRoutes');
 const indicatorRoutes = require('./routes/indicatorRoutes');
+const userLogRoutes = require('./routes/userLogRoutes');
+const { apiHitLogger } = require('./middleware/apiHitLogger');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 const app = express();
@@ -23,6 +25,9 @@ app.get('/health', (req, res) => {
   res.json({ success: true, status: 'ok', service: 'uphealthdashboard' });
 });
 
+// Log authenticated API hits after response (does not change any response)
+app.use(apiHitLogger);
+
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/tickers', tickerRoutes);
@@ -30,6 +35,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/ranking', rankingRoutes);
 app.use('/api/health-ranking', healthRankingRoutes);
 app.use('/api/indicators', indicatorRoutes);
+app.use('/api/user-logs', userLogRoutes);
 app.use('/api/upload', uploadRoutes);
 // Frontend sometimes calls /upload (without /api prefix)
 app.use('/upload', uploadRoutes);
