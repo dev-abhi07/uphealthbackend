@@ -10,7 +10,14 @@ const STATEWIDE_ROLES = new Set(['state_admin', 'system_admin']);
 
 function isStateAdmin(user) {
   const roles = user?.roles || [];
-  return roles.some((r) => STATEWIDE_ROLES.has(String(r).toLowerCase()));
+  return roles.some((r) => {
+    const code = String(
+      r && typeof r === 'object' ? r.code || r.name || '' : r
+    )
+      .toLowerCase()
+      .replace(/\s+/g, '_');
+    return STATEWIDE_ROLES.has(code);
+  });
 }
 
 function primaryGeo(user) {

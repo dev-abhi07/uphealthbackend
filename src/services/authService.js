@@ -80,7 +80,8 @@ function buildUserScope(roles, geoAssignments = []) {
   if (isStatewide || !primary) {
     return {
       level: 'state',
-      is_state_admin: isStateAdmin,
+      // Statewide dashboard access (FE branches on this). User-mgmt stays can_manage_users.
+      is_state_admin: isStatewide,
       is_system_admin: isSystemAdmin,
       can_manage_users: isSystemAdmin,
       can_upload: isStateAdmin || isSystemAdmin,
