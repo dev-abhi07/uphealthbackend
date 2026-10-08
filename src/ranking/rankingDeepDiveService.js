@@ -70,19 +70,11 @@ async function ensureOutcomeSyncedFromApi({ year, month, needBlock = false } = {
 
   return meta;
 }
-const { formatValue: fmt } = (() => {
-  // local copy to avoid circular deps; mirrors rankingService.formatValue
-  function formatValue(value, unit) {
-    if (value === null || value === undefined) return null;
-    const n = Number(value);
-    if (Number.isNaN(n)) return null;
-    if (unit === 'percent') return `${Number(n.toFixed(2))}%`;
-    if (unit === 'index') return Number(n.toFixed(2));
-    if (unit === 'amount') return `Rs.${Number(n.toFixed(2))}`;
-    return Number(n.toFixed(2));
-  }
-  return { formatValue };
-})();
+/** Keep decimals when |value| < 10; whole number at 10+. */
+function formatDisplayNumber(n) {
+  if (Math.abs(n) < 10) return Number(n.toFixed(2)).toString();
+  return String(Math.round(n));
+}
 
 function num(v) {
   if (v === null || v === undefined) return null;
@@ -91,7 +83,14 @@ function num(v) {
 }
 
 function formatValue(value, unit) {
-  return fmt(value, unit);
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  if (Number.isNaN(n)) return null;
+  const formatted = formatDisplayNumber(n);
+  if (unit === 'percent') return `${formatted}%`;
+  if (unit === 'index') return Math.abs(n) < 10 ? Number(n.toFixed(2)) : Math.round(n);
+  if (unit === 'amount') return `Rs.${formatted}`;
+  return formatted;
 }
 
 function parsePeriodLabel(label) {
@@ -380,7 +379,7 @@ async function buildIndicatorBreakup({
     ? resolvedScopeDistrict.toLowerCase()
     : null;
 
-  const indicator_breakup = allInds.map((bi) => {
+  let indicator_breakup = allInds.map((bi) => {
     const bRows = allBreakupRows.filter((r) => r.indicator_code === bi.code);
     let scoped = bRows;
     if (breakupBlockScope && breakupGeoLevel === 'block') {
@@ -401,11 +400,18 @@ async function buildIndicatorBreakup({
     const upPool = bRows.filter((r) => r.period === periodRow.label);
     const up_avg = avg(upPool.map((r) => num(r.value)));
     const bestPool = monthRows.length ? monthRows : upPool;
+    const lowerIsBetter = !!bi.is_negative;
     let best = null;
     for (const r of bestPool) {
       const v = num(r.value);
       if (v == null) continue;
-      if (!best || v > best.value) best = { name: r.geo_name, value: v };
+      // Negative indicators (IND010/IND011): lower value is better
+      if (
+        !best ||
+        (lowerIsBetter ? v < best.value : v > best.value)
+      ) {
+        best = { name: r.geo_name, value: v };
+      }
     }
     const fyScopedVals = [];
     for (const pl of fyLabels) {
@@ -426,6 +432,8 @@ async function buildIndicatorBreakup({
       indicator: bi.short_name || bi.name,
       name: bi.short_name || bi.name,
       unit: bi.unit,
+      is_negative: lowerIsBetter,
+      lower_is_better: lowerIsBetter,
       // DOMAIN column / FE accordion: Excel Domain label (never ante_natal / delivery_care)
       domain: excel.label || excel.key,
       domain_key: excel.key,
@@ -453,6 +461,11 @@ async function buildIndicatorBreakup({
     };
   });
 
+  // Block breakup: omit indicators with no value for that block
+  if (breakupGeoLevel === 'block') {
+    indicator_breakup = indicator_breakup.filter((r) => r.monthly != null);
+  }
+
   return {
     breakup_scope: breakupTitle,
     breakup_geo_level: breakupGeoLevel,
@@ -474,6 +487,8 @@ function mapBreakupToIndicators(indicator_breakup) {
     type_label: r.type_label || null,
     sort_order: r.sort_order != null ? Number(r.sort_order) : null,
     is_composite: false,
+    is_negative: Boolean(r.is_negative || r.lower_is_better),
+    lower_is_better: Boolean(r.is_negative || r.lower_is_better),
     value: r.monthly,
     display_value: r.monthly_display,
     up_avg: r.up_avg,

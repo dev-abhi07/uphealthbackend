@@ -17,6 +17,8 @@ const {
   filterRankingsByScope,
   scopeMeta,
   normalizeName,
+  namesMatch,
+  divisionNamesMatch,
 } = require('../services/geoScopeService');
 const { asyncHandler } = require('../middleware/errorHandler');
 
@@ -232,14 +234,11 @@ async function dashboard(req, res) {
   //      &district_id=auraiya&block_id=auraiya__erwa-katra&area_id=auraiya__erwa-katra
   if (uiView === 'analytics') {
     const data = await runAnalyticsFromQuery(req.query);
-    // Always keep indicators + by_type + by_domain (same grouping as map SUMMARY)
+    // Freehand compare: do not filter series to home geo
     return res.json({
       success: true,
-      ...applyPanelTabShape(
-        attachScopedRankings(data, scope, rawLevel),
-        'all',
-        { defaultTab: 'all' }
-      ),
+      ...applyPanelTabShape(data, 'all', { defaultTab: 'all' }),
+      user_scope: scopeMeta(scope),
     });
   }
 
@@ -278,26 +277,14 @@ async function dashboard(req, res) {
     });
   }
 
-  // Table / Deep Dive view — same geo tier rules as map view
+  // Table / Deep Dive view
   // e.g. view=table&level=district&table_mode=district&period=2026-07
+  // Division/District tabs = statewide (like state/sysadmin). Block tab stays scoped.
   if (uiView === 'table') {
     let tableLevel = String(tableMode || rawLevel || 'division').toLowerCase();
-    // Scoped users: open at their geo tier, honour explicit block drill-down
+    // Block login always stays on blocks; otherwise honour FE table_mode
     if (scope?.level === 'block') {
       tableLevel = 'block';
-    } else if (scope?.level === 'district') {
-      tableLevel = 'block';
-    } else if (scope?.level === 'division') {
-      if (
-        (rawLevel === 'block' || tableLevel === 'block') &&
-        (req.query.district || req.query.dt_lgd || req.query.district_lgd)
-      ) {
-        tableLevel = 'block';
-      } else if (tableLevel === 'division' || !tableLevel) {
-        tableLevel = 'district';
-      } else {
-        tableLevel = 'district';
-      }
     }
     if (!['division', 'district', 'block'].includes(tableLevel)) {
       return res.status(400).json({
@@ -313,15 +300,22 @@ async function dashboard(req, res) {
       });
     }
 
-    const district =
-      req.query.district ||
-      req.query.district_name ||
-      req.query.selected_district ||
-      req.query.district_lgd ||
-      req.query.dt_lgd ||
-      req.query.lgd ||
-      req.query.district_id ||
-      null;
+    const statewideTable =
+      tableLevel === 'division' || tableLevel === 'district';
+
+    const district = statewideTable
+      ? req.query.district ||
+        req.query.district_name ||
+        req.query.selected_district ||
+        null
+      : req.query.district ||
+        req.query.district_name ||
+        req.query.selected_district ||
+        req.query.district_lgd ||
+        req.query.dt_lgd ||
+        req.query.lgd ||
+        req.query.district_id ||
+        null;
     const block =
       req.query.block ||
       req.query.block_name ||
@@ -330,6 +324,7 @@ async function dashboard(req, res) {
       req.query.block_id ||
       null;
 
+    // Statewide table: never fall back to login division/district ids
     const data = await rankingDeepDiveService.getDeepDiveDashboard({
       view: 'table',
       level: tableLevel,
@@ -337,15 +332,18 @@ async function dashboard(req, res) {
       period: req.query.period,
       indicatorCode: req.query.indicator_code || req.query.indicator || 'RANK_COMPOSITE',
       filter,
-      division: req.query.division || scope?.divisionName || null,
+      division: statewideTable
+        ? req.query.division || null
+        : req.query.division || scope?.divisionName || null,
       district,
       block,
-      divCode:
-        req.query.div_code ||
-        (scope?.divisionCode ? String(scope.divisionCode) : null) ||
-        (/^\d+$/.test(String(req.query.parent_area_id || ''))
-          ? req.query.parent_area_id
-          : null),
+      divCode: statewideTable
+        ? req.query.div_code || null
+        : req.query.div_code ||
+          (scope?.divisionCode ? String(scope.divisionCode) : null) ||
+          (/^\d+$/.test(String(req.query.parent_area_id || ''))
+            ? req.query.parent_area_id
+            : null),
       panelTab: req.query.panel_tab || 'indicators',
       breakupTab:
         req.query.breakup_tab ||
@@ -355,18 +353,31 @@ async function dashboard(req, res) {
       labels: req.query.labels,
       analyticsCompare: req.query.analytics_compare || 'timeperiod',
       analyticsMode: req.query.analytics_mode || 'month',
-      // District users need the block ranking list; FE often sends breakup_only=1
-      // on the main table load. Only honour breakup_only when a block is selected.
       breakupOnly:
         (req.query.breakup_only === '1' ||
           req.query.breakup_only === 'true' ||
           req.query.breakupOnly === '1') &&
-        !(scope?.level === 'district' && !block),
+        !(scope?.level === 'district' && tableLevel === 'block' && !block),
     });
 
-    // District-scoped table: same shape for every indicator —
-    // flat blocks as rankings/ranking/block_rankings (+ district_tree for expand UIs).
-    if (scope?.level === 'district' && !block) {
+    // Statewide Division/District table — same full-state list as state/sysadmin
+    if (statewideTable) {
+      const tableScope =
+        scope && isScopedGeoUser(scope)
+          ? { ...scope, peerStatewideTable: true }
+          : scope;
+      return res.json({
+        success: true,
+        ...applyPanelTabShape(
+          attachScopedRankings(data, tableScope, tableLevel),
+          req.query.panel_tab,
+          { defaultTab: 'indicators' }
+        ),
+      });
+    }
+
+    // District/block users on Block tab: flat blocks for assigned district
+    if (scope?.level === 'district' && tableLevel === 'block' && !block) {
       const scopedFlat = attachScopedRankings({ ...data }, scope, 'block');
       const blocks = Array.isArray(scopedFlat.rankings)
         ? scopedFlat.rankings.filter((r) => r && !r.is_state)
@@ -561,54 +572,71 @@ async function dashboard(req, res) {
 
   let mapLevel = rawLevel;
   // Scoped users: open at their geo tier, but honour explicit drill-down
-  // (division user → district list by default; level=block+district=… → blocks)
+  // (division user → peer division map by default; district/block drilldown)
+  // (district user → peer district map by default; level=block → blocks)
   if (scope?.level === 'block') {
     mapLevel = 'block';
   } else if (scope?.level === 'district') {
-    mapLevel = 'block';
+    mapLevel = rawLevel === 'block' ? 'block' : 'district';
   } else if (scope?.level === 'division') {
     if (rawLevel === 'block' && (req.query.district || req.query.dt_lgd || req.query.district_lgd)) {
       mapLevel = 'block';
-    } else {
+    } else if (
+      rawLevel === 'district' ||
+      tableMode === 'district' ||
+      req.query.district ||
+      req.query.dt_lgd ||
+      req.query.district_lgd
+    ) {
       mapLevel = 'district';
+    } else {
+      mapLevel = 'division';
     }
   }
 
-  // Division users → districts (unless drilling into blocks); district users → blocks
+  // Division / district peer maps; drilldowns use district or block
   let effectiveTableMode = tableMode;
   if (scope?.level === 'division') {
     if (mapLevel === 'block') {
       effectiveTableMode = 'block';
-    } else if (!effectiveTableMode || effectiveTableMode === 'division') {
+    } else if (mapLevel === 'district') {
       effectiveTableMode = 'district';
+    } else {
+      effectiveTableMode = 'division';
     }
   }
-  if (
-    scope?.level === 'district' &&
-    (!effectiveTableMode || effectiveTableMode === 'division' || effectiveTableMode === 'district')
-  ) {
-    effectiveTableMode = 'block';
+  if (scope?.level === 'district') {
+    effectiveTableMode = mapLevel === 'block' ? 'block' : 'district';
   }
+
+  // Statewide peer maps: do not filter by home division/district geo codes.
+  const peerDistrictMap =
+    scope?.level === 'district' && mapLevel === 'district';
+  const peerDivisionMap =
+    scope?.level === 'division' && mapLevel === 'division';
+  const peerMap = peerDistrictMap || peerDivisionMap;
 
   const opts = {
     period: req.query.period,
     // Prefer explicit district name; area_id must be LGD (Pilibhit=173) or master id (59)
-    district:
-      req.query.district ||
-      req.query.district_name ||
-      req.query.selected_district ||
-      req.query.district_lgd ||
-      req.query.dt_lgd ||
-      req.query.lgd ||
-      // district_id = master PK (Pilibhit=59) — check before area_id
-      req.query.district_id ||
-      (req.query.area_id &&
-      !String(req.query.area_id).includes('__') &&
-      !req.query.block_id &&
-      !req.query.block
-        ? req.query.area_id
-        : null) ||
-      null,
+    // Peer division map: do not pass area_id as district filter.
+    district: peerDivisionMap
+      ? null
+      : req.query.district ||
+        req.query.district_name ||
+        req.query.selected_district ||
+        req.query.district_lgd ||
+        req.query.dt_lgd ||
+        req.query.lgd ||
+        // district_id = master PK (Pilibhit=59) — check before area_id
+        req.query.district_id ||
+        (req.query.area_id &&
+        !String(req.query.area_id).includes('__') &&
+        !req.query.block_id &&
+        !req.query.block
+          ? req.query.area_id
+          : null) ||
+        null,
     // Block click: FE often sends block_id = Block LGD (Bakshi-Ka-Talab = 1329)
     block:
       req.query.block ||
@@ -620,13 +648,20 @@ async function dashboard(req, res) {
         ? req.query.area_id
         : null) ||
       null,
-    divCode: req.query.div_code || (scope?.divisionCode ? String(scope.divisionCode) : null),
-    division: req.query.division || scope?.divisionName || null,
-    parentAreaId: /^\d+$/.test(String(req.query.parent_area_id || ''))
-      ? req.query.parent_area_id
-      : scope?.divisionCode
-        ? String(scope.divisionCode)
-        : null,
+    divCode: peerMap
+      ? null
+      : req.query.div_code ||
+        (scope?.divisionCode ? String(scope.divisionCode) : null),
+    division: peerMap
+      ? null
+      : req.query.division || scope?.divisionName || null,
+    parentAreaId: peerMap
+      ? null
+      : /^\d+$/.test(String(req.query.parent_area_id || ''))
+        ? req.query.parent_area_id
+        : scope?.divisionCode
+          ? String(scope.divisionCode)
+          : null,
     tableMode: effectiveTableMode,
     mapLevel,
     indicatorCode: req.query.indicator_code || req.query.indicator || null,
@@ -635,6 +670,52 @@ async function dashboard(req, res) {
   // Drill-down: map stays on division, table shows districts under div_code
   // e.g. level=division&table_mode=district&div_code=14595
   let data = await rankingService.getRankingDashboard(opts);
+
+  // Division peer map: ranking = all divisions; SUMMARY = selected peer or home
+  if (peerDivisionMap && scope.divisionName) {
+    const askedDivisionName = String(
+      req.query.division || req.query.div_code || ''
+    ).trim();
+    const askedIsPeer =
+      Boolean(req.query._peer_division_select) ||
+      (askedDivisionName &&
+        !divisionNamesMatch(askedDivisionName, scope.divisionName) &&
+        String(askedDivisionName) !== String(scope.divisionCode || '') &&
+        String(askedDivisionName) !== String(scope.divisionId || ''));
+    const summaryDivision = askedIsPeer
+      ? askedDivisionName
+      : scope.divisionName;
+    // Numeric div_code only — FE may send division name as div_code for peers
+    const rawDivCode = String(req.query.div_code || '').trim();
+    const summaryDivCode = askedIsPeer
+      ? /^\d+$/.test(rawDivCode)
+        ? rawDivCode
+        : null
+      : scope.divisionCode;
+    const divSummary = await rankingService.getDivisionDashboard({
+      period: opts.period,
+      division: summaryDivision,
+      divCode: summaryDivCode,
+      indicatorCode: opts.indicatorCode,
+      skipOutcomeSync: true,
+    });
+    if (divSummary && divSummary.has_data) {
+      data = {
+        ...data,
+        overall_composite_score: divSummary.overall_composite_score,
+        overall_composite_label: divSummary.overall_composite_label,
+        state_overall_composite_score:
+          divSummary.state_overall_composite_score ?? data.state_overall_composite_score,
+        indicators: divSummary.indicators,
+        by_type: divSummary.by_type,
+        by_domain: divSummary.by_domain,
+        selected_division: divSummary.selected_division,
+        division: summaryDivision,
+        div_code: summaryDivCode || divSummary.div_code || null,
+        summary_scope: 'division',
+      };
+    }
+  }
 
   // District-scoped user on block map:
   // - no block selected → SUMMARY = district; ranking stays all blocks
@@ -730,6 +811,75 @@ async function dashboard(req, res) {
     }
   }
 
+  if (scope?.level === 'division') {
+    scoped.locked_division = {
+      id: scope.divisionId,
+      name: scope.divisionName,
+      code: scope.divisionCode,
+      district_count: (scope.districtNamesInDivision || []).length,
+      districts: scope.districtNamesInDivision || [],
+    };
+    const mineDiv = (scoped.ranking || []).find((r) => r.is_user_area);
+    if (mineDiv || scope.divisionName) {
+      scoped.user_division_rank = mineDiv
+        ? {
+            name: mineDiv.name,
+            rank: mineDiv.rank,
+            score: mineDiv.score != null ? mineDiv.score : mineDiv.value,
+            code: scope.divisionCode,
+            area_id:
+              mineDiv.area_id != null ? mineDiv.area_id : scope.divisionCode,
+            division_id: scope.divisionId,
+          }
+        : {
+            name: scope.divisionName,
+            rank: null,
+            score: null,
+            code: scope.divisionCode,
+            area_id: scope.divisionCode,
+            division_id: scope.divisionId,
+          };
+    }
+
+    // When drilled into districts/blocks, also attach statewide division peers for Rank Bucket
+    if (mapLevel !== 'division') {
+      try {
+        const peerDash = await rankingService.getRankingDashboard({
+          period: opts.period,
+          mapLevel: 'division',
+          tableMode: 'division',
+          indicatorCode: opts.indicatorCode,
+        });
+        const peerList = Array.isArray(peerDash?.ranking) ? peerDash.ranking : [];
+        scoped.panel_ranking = peerList.map((row) => {
+          const isUserArea =
+            divisionNamesMatch(row.name || row.division, scope.divisionName) ||
+            (scope.divisionCode != null &&
+              String(row.area_id ?? row.div_code ?? '') ===
+                String(scope.divisionCode)) ||
+            (scope.divisionId != null &&
+              String(row.division_id ?? row.id ?? '') ===
+                String(scope.divisionId));
+          return { ...row, is_user_area: Boolean(isUserArea) };
+        });
+        scoped.panel_geo_level = 'division';
+        const mine = scoped.panel_ranking.find((r) => r.is_user_area);
+        if (mine) {
+          scoped.user_division_rank = {
+            name: mine.name,
+            rank: mine.rank,
+            score: mine.score != null ? mine.score : mine.value,
+            code: scope.divisionCode,
+            area_id: mine.area_id != null ? mine.area_id : scope.divisionCode,
+            division_id: scope.divisionId,
+          };
+        }
+      } catch (_) {
+        /* ranking already scoped */
+      }
+    }
+  }
+
   if (scope?.level === 'district') {
     scoped.locked_district = {
       id: scope.districtId,
@@ -740,6 +890,56 @@ async function dashboard(req, res) {
       block_count: (scope.blockNamesInDistrict || []).length,
       blocks: scope.blockNamesInDistrict || [],
     };
+
+    // Rank Bucket panel: statewide district peers (map paint stays blocks).
+    try {
+      const peerDash = await rankingService.getRankingDashboard({
+        period: opts.period,
+        mapLevel: 'district',
+        tableMode: 'district',
+        indicatorCode: opts.indicatorCode,
+      });
+      const peerList = Array.isArray(peerDash?.ranking) ? peerDash.ranking : [];
+      const panelRanking = peerList.map((row) => {
+        const lgd =
+          row.district_lgd != null
+            ? row.district_lgd
+            : row.lgd_code != null
+              ? row.lgd_code
+              : row.area_id;
+        const isUserArea =
+          namesMatch(row.name || row.district, scope.districtName) ||
+          (scope.districtLgd != null &&
+            lgd != null &&
+            String(lgd) === String(scope.districtLgd)) ||
+          (scope.districtId != null &&
+            row.district_id != null &&
+            String(row.district_id) === String(scope.districtId));
+        return { ...row, is_user_area: Boolean(isUserArea) };
+      });
+      scoped.panel_ranking = panelRanking;
+      scoped.panel_geo_level = 'district';
+      const mine = panelRanking.find((r) => r.is_user_area);
+      scoped.user_district_rank = mine
+        ? {
+            name: mine.name,
+            rank: mine.rank,
+            score: mine.score != null ? mine.score : mine.value,
+            lgd: scope.districtLgd,
+            area_id: mine.area_id != null ? mine.area_id : scope.districtLgd,
+            district_id: scope.districtId,
+          }
+        : {
+            name: scope.districtName,
+            rank: null,
+            score: null,
+            lgd: scope.districtLgd,
+            area_id: scope.districtLgd,
+            district_id: scope.districtId,
+          };
+    } catch (_) {
+      /* keep block ranking only if peer fetch fails */
+    }
   }
   res.json({
     success: true,
@@ -876,8 +1076,7 @@ async function periods(req, res) {
 }
 
 async function geoOptions(req, res) {
-  // Analytics dropdowns need peer divisions/districts/blocks for all roles.
-  // Mark peer_compare so enforceQueryGeoScope does not 403 outside home geo.
+  // Analytic View freehand: statewide division/district/block lists for all roles.
   req.query.peer_compare = '1';
   const scope = await withUserScope(req);
   const parsed = rankingAnalyticsService.parseFrontendAnalyticsQuery(req.query);
@@ -900,9 +1099,11 @@ async function geoOptions(req, res) {
 async function analytics(req, res) {
   const scope = await withUserScope(req);
   const data = await runAnalyticsFromQuery(req.query);
+  // Freehand compare for all logins — keep requested geo series as-is
   res.json({
     success: true,
-    ...attachScopedRankings(data, scope, req.query.level || 'district'),
+    ...data,
+    user_scope: scopeMeta(scope),
   });
 }
 

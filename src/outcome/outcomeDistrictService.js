@@ -19,14 +19,21 @@ function num(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+/** Keep decimals when |value| < 10; whole number at 10+. */
+function formatDisplayNumber(n) {
+  if (Math.abs(n) < 10) return Number(n.toFixed(2)).toString();
+  return String(Math.round(n));
+}
+
 function formatValue(value, unit) {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   if (Number.isNaN(n)) return null;
-  if (unit === 'percent') return `${Number(n.toFixed(2))}%`;
-  if (unit === 'index') return Number(n.toFixed(4));
-  if (unit === 'amount') return Number(n.toFixed(2));
-  return Number(n.toFixed(2));
+  const formatted = formatDisplayNumber(n);
+  if (unit === 'percent') return `${formatted}%`;
+  if (unit === 'index') return Math.abs(n) < 10 ? Number(n.toFixed(4)) : Math.round(n);
+  if (unit === 'amount') return formatted;
+  return formatted;
 }
 
 function bandSize(total) {

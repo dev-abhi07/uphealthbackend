@@ -186,11 +186,14 @@ async function loadIndicatorMoM(geoLevel, currentLabel, prevLabel) {
 
   const byKey = new Map();
   for (const ind of inds) {
+    const code = String(ind.code || '').toUpperCase();
+    const lowerIsBetter =
+      !!ind.is_negative || code === 'IND010' || code === 'IND011';
     const rows = await loadIndicatorByPeriod({
       geoLevel,
       indicatorCode: ind.code,
       periodLabels: labels,
-      isNegative: !!ind.is_negative,
+      isNegative: lowerIsBetter,
     });
     for (const r of rows) {
       const key = `${geoKey(r.name)}::${ind.code}`;
@@ -200,7 +203,7 @@ async function loadIndicatorMoM(geoLevel, currentLabel, prevLabel) {
           areaName: shortGeoName(r.name),
           code: ind.code,
           indicatorName: (ind.short_name || ind.name || ind.code).toUpperCase(),
-          lowerIsBetter: !!ind.is_negative,
+          lowerIsBetter,
           current: null,
           previous: null,
         });
@@ -223,6 +226,14 @@ function pctChange(current, previous) {
   return round(((current - previous) / Math.abs(previous)) * 100, 1);
 }
 
+function resolveTrend(delta, { lowerIsBetter = false, flatEps = 0.005 } = {}) {
+  if (delta == null || Number.isNaN(Number(delta))) return 'flat';
+  const d = Number(delta);
+  if (Math.abs(d) <= flatEps) return 'flat';
+  const improved = lowerIsBetter ? d < 0 : d > 0;
+  return improved ? 'up' : 'down';
+}
+
 function buildIndicatorInsights(rows, levelLabel) {
   let bestIncrease = null;
   let bestDecrease = null;
@@ -231,26 +242,35 @@ function buildIndicatorInsights(rows, levelLabel) {
     const change = row.current - row.previous;
     const pct = pctChange(row.current, row.previous);
     if (pct == null) return;
+    const lowerIsBetter = !!row.lowerIsBetter;
+    // Semantic: 'up' = improved (green), 'down' = worsened (red)
+    const trend = resolveTrend(change, { lowerIsBetter, flatEps: 0 });
 
     const increaseCandidate = {
       areaId: row.areaId,
       areaName: row.areaName,
+      code: row.code || null,
       indicatorName: row.indicatorName,
       value: round(row.current, 2),
       pctChange: pct,
       title: 'Highest increase in indicator from last month',
       levelLabel,
-      lowerIsBetter: row.lowerIsBetter,
+      lowerIsBetter,
+      lower_is_better: lowerIsBetter,
+      trend,
     };
     const decreaseCandidate = {
       areaId: row.areaId,
       areaName: row.areaName,
+      code: row.code || null,
       indicatorName: row.indicatorName,
       value: round(row.current, 2),
       pctChange: pct,
       title: 'Maximum decrease in indicator from last month',
       levelLabel,
-      lowerIsBetter: row.lowerIsBetter,
+      lowerIsBetter,
+      lower_is_better: lowerIsBetter,
+      trend,
     };
 
     if (!bestIncrease || pct > bestIncrease.pctChange) {
@@ -274,25 +294,21 @@ function matrixKind(unit) {
   return 'ratio';
 }
 
+/** Indicators: |value| < 10 keep decimals; 10+ whole number. */
+function formatIndicatorNumber(n) {
+  if (Math.abs(n) < 10) return Number(n.toFixed(2)).toString();
+  return String(Math.round(n));
+}
+
 function formatMatrixDisplay(kind, value) {
   if (value == null || Number.isNaN(Number(value))) return '—';
   const n = Number(value);
   if (kind === 'rank') return String(Math.round(n));
   if (kind === 'percent') {
     const pct = n <= 1 ? n * 100 : n;
-    if (Math.abs(pct - Math.round(pct)) < 0.005) return `${Math.round(pct)}%`;
-    return `${pct.toFixed(2)}%`;
+    return `${formatIndicatorNumber(pct)}%`;
   }
-  if (kind === 'number') return n % 1 === 0 ? String(n) : n.toFixed(2);
-  return n % 1 === 0 ? String(n) : n.toFixed(2);
-}
-
-function resolveTrend(delta, { lowerIsBetter = false, flatEps = 0.005 } = {}) {
-  if (delta == null || Number.isNaN(Number(delta))) return 'flat';
-  const d = Number(delta);
-  if (Math.abs(d) <= flatEps) return 'flat';
-  const improved = lowerIsBetter ? d < 0 : d > 0;
-  return improved ? 'up' : 'down';
+  return formatIndicatorNumber(n);
 }
 
 /** Allowed area names for scoped login; null = statewide (no filter). */
@@ -457,11 +473,14 @@ async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
     `
   );
   for (const ind of inds) {
+    const code = String(ind.code || '').toUpperCase();
+    const isNegative =
+      !!ind.is_negative || code === 'IND010' || code === 'IND011';
     const rows = await loadIndicatorByPeriod({
       geoLevel,
       indicatorCode: ind.code,
       periodLabels: labels,
-      isNegative: !!ind.is_negative,
+      isNegative,
     });
     for (const r of rows) {
       out.push({
@@ -476,7 +495,7 @@ async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
         unit: ind.unit,
         sort_order: ind.sno != null ? Number(ind.sno) : 999,
         is_composite: false,
-        is_negative: !!ind.is_negative,
+        is_negative: isNegative,
       });
     }
   }

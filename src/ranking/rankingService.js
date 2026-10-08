@@ -9,13 +9,20 @@ function num(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+/** Keep decimals when |value| < 10; whole number at 10+. */
+function formatDisplayNumber(n) {
+  if (Math.abs(n) < 10) return Number(n.toFixed(2)).toString();
+  return String(Math.round(n));
+}
+
 function formatValue(value, unit) {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   if (Number.isNaN(n)) return null;
-  if (unit === 'percent') return `${Number(n.toFixed(2))}%`;
-  if (unit === 'index') return Number(n.toFixed(2));
-  return Number(n.toFixed(2));
+  const formatted = formatDisplayNumber(n);
+  if (unit === 'percent') return `${formatted}%`;
+  if (unit === 'index') return Math.abs(n) < 10 ? Number(n.toFixed(2)) : Math.round(n);
+  return formatted;
 }
 
 /** Display label for a ranking score (composite stays numeric). */
@@ -570,14 +577,19 @@ async function getGeoDashboard({
       score === null || prevScore === null
         ? null
         : Number((score - prevScore).toFixed(4));
+    // value_trend is semantic: 'up' = improved (green), 'down' = worsened (red)
     const valueTrend =
       valueChange === null
         ? null
         : valueChange === 0
           ? 'same'
-          : valueChange > 0
-            ? 'up'
-            : 'down';
+          : selectedInd.is_negative
+            ? valueChange < 0
+              ? 'up'
+              : 'down'
+            : valueChange > 0
+              ? 'up'
+              : 'down';
     return {
       rank,
       local_rank: filtered ? localRank : null,

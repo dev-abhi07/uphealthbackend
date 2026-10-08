@@ -296,12 +296,13 @@ function resolveAskedDistrictName(q, districtsInDivision = []) {
 }
 
 /**
- * Analytics / geo-options peer browse:
+ * Analytics / geo-options freehand browse:
  * - view=analytics
  * - analytics_compare=geography
  * - peer_compare=1 (set by geo-options for dropdown cascade)
  *
- * Allows same-level peer geos for compare; map/table stay locked.
+ * Any login may select any division/district/block for compare.
+ * Map/table views stay geo-scoped.
  */
 function isAnalyticsQuery(query = {}) {
   const view = String(query.view || '').toLowerCase();
@@ -314,6 +315,30 @@ function isAnalyticsQuery(query = {}) {
     query.peer_compare === true ||
     query._peer_geo === '1';
   return Boolean(peer);
+}
+
+/**
+ * Table View Division / District tabs = statewide (same as state/sysadmin).
+ * Do not inject home division_id / district_id / div_code / dt_lgd.
+ * Block tab / block row selection stays geo-scoped.
+ */
+function isStatewideTableBrowse(query = {}) {
+  const view = String(query.view || '').toLowerCase();
+  if (view !== 'table') return false;
+  const mode = String(
+    query.table_mode || query.geo_level || query.level || ''
+  ).toLowerCase();
+  if (mode === 'block') return false;
+  if (
+    query.block ||
+    query.block_id ||
+    query.block_lgd ||
+    query.selected_block ||
+    query.block_name
+  ) {
+    return false;
+  }
+  return mode === 'division' || mode === 'district' || mode === '';
 }
 
 function matchBlockName(asked, name) {
@@ -337,6 +362,48 @@ function enforceQueryGeoScope(query, scope) {
   const askedDivision = q.division || q.div_code || q.divCode || '';
   const askedDistrict = q.district || q.district_id || '';
   const askedBlock = q.block || q.block_name || '';
+
+  // Analytic View: freehand geo1/geo2 — do not clamp or 403 outside home geo.
+  // Requested division/district/block stay as sent; map/table still scoped below.
+  if (analytics) {
+    q._analytics_peer = true;
+    q._analytics_freehand = true;
+    return scope;
+  }
+
+  // Table View statewide Division/District: same data as state/sysadmin —
+  // do not lock query to home geo ids (FE already omits them).
+  if (
+    isStatewideTableBrowse(q) &&
+    (scope.level === 'division' || scope.level === 'district')
+  ) {
+    const mode = String(
+      q.table_mode || q.geo_level || q.level || 'division'
+    ).toLowerCase();
+    const browse = mode === 'district' ? 'district' : 'division';
+    q.level = browse;
+    q.geo_level = browse;
+    q.table_mode = browse;
+    q._table_statewide = true;
+    delete q.division_id;
+    delete q.div_code;
+    delete q.divCode;
+    delete q.parent_area_id;
+    // Keep optional row selection (district=/division=) for breakup; strip home locks
+    if (!askedDivision) {
+      delete q.division;
+    }
+    if (!askedDistrict && !q.district_name && !q.selected_district) {
+      delete q.district;
+      delete q.district_name;
+      delete q.selected_district;
+      delete q.district_id;
+      delete q.district_lgd;
+      delete q.dt_lgd;
+      delete q.lgd;
+    }
+    return scope;
+  }
 
   if (scope.level === 'division') {
     // Analytics / FE often send district_id or area_id as master PK / LGD.
@@ -406,6 +473,32 @@ function enforceQueryGeoScope(query, scope) {
             q.table_mode = 'district';
           }
         } else {
+          // Peer division on statewide map — allow indicator breakup for any
+          // division the user can see on the choropleth (e.g. Lucknow login → Bareilly).
+          const isBreakup =
+            q.breakup_only === '1' ||
+            q.breakup_only === 'true' ||
+            q.breakupOnly === '1' ||
+            q.breakup_only === true;
+          const isDivisionMapLevel =
+            String(q.geo_level || q.level || 'division').toLowerCase() ===
+              'division' &&
+            !q.district &&
+            !q.district_name &&
+            !q.dt_lgd &&
+            !q.district_lgd &&
+            !q.district_id;
+          if (isBreakup || isDivisionMapLevel) {
+            q._peer_division_select = true;
+            q.level = 'division';
+            q.geo_level = 'division';
+            q.table_mode = 'division';
+            if (scope.divisionId != null) {
+              q.division_id = String(scope.divisionId);
+            }
+            // Keep requested division= / div_code= for summary breakup
+            return scope;
+          }
           const err = new Error('Access denied: outside your division scope');
           err.status = 403;
           throw err;
@@ -427,16 +520,6 @@ function enforceQueryGeoScope(query, scope) {
         throw err;
       }
     }
-    // Always lock query to this division. Do NOT auto-select a district —
-    // FE often sends district=<division short name> (e.g. Lucknow) which
-    // wrongly scopes the panel to one district.
-    if (scope.divisionName) q.division = scope.divisionName;
-    if (scope.divisionCode) {
-      q.div_code = scope.divisionCode;
-      q.parent_area_id = scope.divisionCode;
-    }
-    if (scope.divisionId != null) q.division_id = String(scope.divisionId);
-
     // Clear accidental district filter when it equals the division's short name
     // (Lucknow district vs Lucknow Division) and no explicit district drill-down id/lgd.
     // Keep remapped district selections (Sitapur, Hardoi, …).
@@ -445,7 +528,7 @@ function enforceQueryGeoScope(query, scope) {
       q.district || q.district_name || askedDistrict || ''
     );
     const hasExplicitDistrictId =
-      q.district_id || q.district_lgd || q.dt_lgd || q.lgd || q.area_id;
+      q.district_id || q.district_lgd || q.dt_lgd || q.lgd;
     const isRemappedOtherDistrict =
       askedDistNorm &&
       divShort &&
@@ -465,33 +548,69 @@ function enforceQueryGeoScope(query, scope) {
       delete q.selected_district;
     }
 
-    // Division users default to district ranking. Allow explicit block drill-down
-    // when a district inside the division is selected (FE: level=block&district=…).
+    // Peer division map (statewide) vs districts-in-division / blocks drilldown
     const effectiveAskedDistrict =
       q.district || q.district_name || askedDistrict || '';
     const wantsBlock =
       String(q.level || '').toLowerCase() === 'block' ||
       String(q.geo_level || '').toLowerCase() === 'block' ||
       String(q.table_mode || '').toLowerCase() === 'block';
+    const wantsDistrictDrill =
+      Boolean(effectiveAskedDistrict) ||
+      Boolean(q.dt_lgd || q.district_lgd || q.district_id) ||
+      String(q.geo_level || '').toLowerCase() === 'district' ||
+      String(q.level || '').toLowerCase() === 'district' ||
+      String(q.table_mode || '').toLowerCase() === 'district';
+    const wantsPeerDivisionMap =
+      !wantsBlock &&
+      !wantsDistrictDrill &&
+      (String(q.geo_level || q.level || 'division').toLowerCase() === 'division');
 
     if (wantsBlock && effectiveAskedDistrict) {
       q.level = 'block';
       q.geo_level = 'block';
       q.table_mode = 'block';
+      if (scope.divisionName) q.division = scope.divisionName;
+      if (scope.divisionCode) {
+        q.div_code = scope.divisionCode;
+        q.parent_area_id = scope.divisionCode;
+      }
+      if (scope.divisionId != null) q.division_id = String(scope.divisionId);
+    } else if (wantsDistrictDrill) {
+      // Districts inside home division (or blocks under a district)
+      if (scope.divisionName) q.division = scope.divisionName;
+      if (scope.divisionCode) {
+        q.div_code = scope.divisionCode;
+        q.parent_area_id = scope.divisionCode;
+      }
+      if (scope.divisionId != null) q.division_id = String(scope.divisionId);
+      q.level = 'district';
+      q.geo_level = 'district';
+      q.table_mode = 'district';
+    } else if (wantsPeerDivisionMap) {
+      // Statewide division choropleth — do not filter by home div_code
+      q.level = 'division';
+      q.geo_level = 'division';
+      q.table_mode = 'division';
+      if (scope.divisionId != null) q.division_id = String(scope.divisionId);
+      delete q.div_code;
+      delete q.parent_area_id;
+      delete q.division;
+      delete q.district;
+      delete q.district_name;
+      delete q.selected_district;
+      delete q.dt_lgd;
     } else {
-      if (!q.level || String(q.level).toLowerCase() === 'division') {
-        q.level = 'district';
+      // Fallback: districts in home division
+      if (scope.divisionName) q.division = scope.divisionName;
+      if (scope.divisionCode) {
+        q.div_code = scope.divisionCode;
+        q.parent_area_id = scope.divisionCode;
       }
-      if (!q.geo_level || String(q.geo_level).toLowerCase() === 'division') {
-        q.geo_level = 'district';
-      }
-      if (!q.table_mode || String(q.table_mode).toLowerCase() === 'division') {
-        q.table_mode = 'district';
-      }
-      // Stay on district ranking — clear leftover block mode from prior navigation
-      if (String(q.level).toLowerCase() === 'district') {
-        q.table_mode = 'district';
-      }
+      if (scope.divisionId != null) q.division_id = String(scope.divisionId);
+      q.level = 'district';
+      q.geo_level = 'district';
+      q.table_mode = 'district';
     }
   } else if (scope.level === 'district') {
     const analyticsPeerDistrict =
@@ -523,6 +642,29 @@ function enforceQueryGeoScope(query, scope) {
         String(askedDistrict) === String(scope.districtId) ||
         (scope.districtLgd != null && String(askedDistrict) === String(scope.districtLgd));
       if (!askedOk) {
+        // Peer district on statewide map — allow indicator breakup (same as division peers)
+        const isBreakup =
+          q.breakup_only === '1' ||
+          q.breakup_only === 'true' ||
+          q.breakupOnly === '1' ||
+          q.breakup_only === true;
+        const isDistrictMapLevel =
+          String(q.geo_level || q.level || 'district').toLowerCase() ===
+            'district' &&
+          !q.block &&
+          !q.block_id &&
+          !q.block_lgd &&
+          String(q.table_mode || '').toLowerCase() !== 'block';
+        if (isBreakup || isDistrictMapLevel) {
+          q._peer_district_select = true;
+          q.district = String(askedDistrict).trim();
+          q.district_name = q.district;
+          q.level = 'district';
+          q.geo_level = 'district';
+          q.table_mode = 'district';
+          if (scope.divisionName) q.home_division = scope.divisionName;
+          return scope;
+        }
         const err = new Error('Access denied: outside your district scope');
         err.status = 403;
         throw err;
@@ -542,7 +684,6 @@ function enforceQueryGeoScope(query, scope) {
     if (scope.districtId) q.district_id = String(scope.districtId);
     if (scope.districtLgd != null) {
       q.district_lgd = String(scope.districtLgd);
-      q.dt_lgd = String(scope.districtLgd);
     }
 
     // Clear accidental block filter when it equals district name
@@ -555,18 +696,25 @@ function enforceQueryGeoScope(query, scope) {
       delete q.selected_block;
     }
 
-    // District users land on block ranking under their district
-    if (!q.level || ['division', 'district'].includes(String(q.level).toLowerCase())) {
+    // District map = peer choropleth; blocks only when FE drills in / table_mode=block
+    const wantsBlocks =
+      String(q.geo_level || '').toLowerCase() === 'block' ||
+      String(q.level || '').toLowerCase() === 'block' ||
+      String(q.table_mode || '').toLowerCase() === 'block' ||
+      Boolean(q.block || q.block_id || q.block_lgd || q.selected_block);
+
+    if (wantsBlocks) {
       q.level = 'block';
-    }
-    if (
-      !q.geo_level ||
-      ['division', 'district'].includes(String(q.geo_level).toLowerCase())
-    ) {
       q.geo_level = 'block';
-    }
-    if (!q.table_mode || q.table_mode === 'district' || q.table_mode === 'division') {
       q.table_mode = 'block';
+      if (scope.districtLgd != null) q.dt_lgd = String(scope.districtLgd);
+    } else {
+      q.level = 'district';
+      q.geo_level = 'district';
+      if (!q.table_mode || String(q.table_mode).toLowerCase() === 'division') {
+        q.table_mode = 'district';
+      }
+      delete q.dt_lgd;
     }
   } else if (scope.level === 'block') {
     // FE often sends area_id = district LGD (Lucknow=162) on block views / breakup_only.
@@ -680,9 +828,36 @@ function filterRankingsByScope(rankings, scope, geoLevel = 'district') {
 
   if (scope.level === 'division') {
     if (level === 'division') {
-      filtered = rankings.filter((r) =>
-        divisionNamesMatch(r.name || r.area_name, scope.divisionName)
+      // Peer division map / Rank Bucket: keep statewide list + mark home division
+      return rankings.map((r) => {
+        const isUserArea =
+          divisionNamesMatch(r.name || r.area_name, scope.divisionName) ||
+          (scope.divisionCode != null &&
+            (String(r.area_id ?? '') === String(scope.divisionCode) ||
+              String(r.div_code ?? r.division_code ?? '') ===
+                String(scope.divisionCode))) ||
+          (scope.divisionId != null &&
+            (String(r.division_id ?? r.id ?? '') === String(scope.divisionId)));
+        return {
+          ...r,
+          is_user_area: Boolean(isUserArea),
+          selected: Boolean(isUserArea || r.selected),
+        };
+      });
+    } else if (level === 'district' && scope.peerStatewideTable) {
+      // Table View District tab: full state list; mark home-division districts
+      const homeDistricts = new Set(
+        (scope.districtNamesInDivision || []).map((n) => normalizeName(n))
       );
+      return rankings.map((r) => {
+        const label = normalizeName(r.name || r.area_name);
+        const isUserArea = Boolean(label && homeDistricts.has(label));
+        return {
+          ...r,
+          is_user_area: isUserArea,
+          selected: Boolean(isUserArea || r.selected),
+        };
+      });
     } else if (level === 'district' || level === 'block') {
       const allowed = new Set(
         (scope.districtNamesInDivision || []).map((n) => normalizeName(n))
@@ -711,18 +886,40 @@ function filterRankingsByScope(rankings, scope, geoLevel = 'district') {
         });
     }
   } else if (scope.level === 'district') {
-    if (level === 'division') {
+    if (level === 'division' && scope.peerStatewideTable) {
+      // Table View Division tab: full state list; mark home division
+      return rankings.map((r) => {
+        const isUserArea = divisionNamesMatch(
+          r.name || r.area_name,
+          scope.divisionName
+        );
+        return {
+          ...r,
+          is_user_area: Boolean(isUserArea),
+          selected: Boolean(isUserArea || r.selected),
+        };
+      });
+    } else if (level === 'division') {
       filtered = rankings.filter((r) =>
         divisionNamesMatch(r.name || r.area_name, scope.divisionName)
       );
     } else if (level === 'district') {
-      filtered = rankings
-        .filter(
-          (r) =>
-            namesMatch(r.name || r.area_name, scope.districtName) ||
-            normalizeName(r.name || r.area_name) === normalizeName(scope.districtName)
-        )
-        .map((r) => ({ ...r }));
+      // Peer district map / Rank Bucket: keep statewide list + mark home district
+      return rankings.map((r) => {
+        const isUserArea =
+          namesMatch(r.name || r.area_name, scope.districtName) ||
+          normalizeName(r.name || r.area_name) ===
+            normalizeName(scope.districtName) ||
+          (scope.districtLgd != null &&
+            (String(r.area_id ?? '') === String(scope.districtLgd) ||
+              String(r.district_lgd ?? r.lgd_code ?? '') ===
+                String(scope.districtLgd)));
+        return {
+          ...r,
+          is_user_area: Boolean(isUserArea),
+          selected: Boolean(isUserArea || r.selected),
+        };
+      });
     } else if (level === 'block') {
       const allowed = new Set(
         (scope.blockNamesInDistrict || []).map((n) => normalizeName(n))
@@ -815,6 +1012,7 @@ module.exports = {
   scopeMeta,
   resolveAskedDistrictName,
   isAnalyticsQuery,
+  isStatewideTableBrowse,
   namesMatch,
   divisionNamesMatch,
   normalizeName,

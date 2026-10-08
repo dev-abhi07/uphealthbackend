@@ -15,14 +15,21 @@ function num(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+/** Keep decimals when |value| < 10; whole number at 10+. */
+function formatDisplayNumber(n) {
+  if (Math.abs(n) < 10) return Number(n.toFixed(2)).toString();
+  return String(Math.round(n));
+}
+
 function formatValue(value, unit) {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   if (Number.isNaN(n)) return null;
-  if (unit === 'percent') return `${Number(n.toFixed(2))}%`;
-  if (unit === 'index') return Number(n.toFixed(4));
-  if (unit === 'amount') return Number(n.toFixed(2));
-  return Number(n.toFixed(2));
+  const formatted = formatDisplayNumber(n);
+  if (unit === 'percent') return `${formatted}%`;
+  if (unit === 'index') return Math.abs(n) < 10 ? Number(n.toFixed(4)) : Math.round(n);
+  if (unit === 'amount') return formatted;
+  return formatted;
 }
 
 function bandSize(total) {
@@ -458,42 +465,48 @@ async function getBlockOutcomeDashboard({
     `
   );
 
-  const indicators = masterInds.map((i) => {
-    const value = avgMap.has(i.code) ? avgMap.get(i.code) : null;
-    return {
-      code: i.code,
-      name: i.short_name || i.name,
-      full_name: i.name,
-      unit: i.unit,
-      is_composite: false,
-      is_negative: !!i.is_negative,
-      domain: i.domain || null,
-      domain_label: i.domain_label || null,
-      indicator_type: i.indicator_type || null,
-      type: i.indicator_type || null,
-      numerator: i.numerator_text || null,
-      denominator: i.denominator_text || null,
-      data_source: i.data_source_text || null,
-      sort_order: i.sno != null ? Number(i.sno) : null,
-      value,
-      display_value: formatValue(value, i.unit),
-      selected: !composite && selectedInd.code === i.code,
-      available: value != null,
-    };
-  });
+  // Block scope: omit indicators with no value (do not send blank rows)
+  const indicators = masterInds
+    .map((i) => {
+      const value = avgMap.has(i.code) ? avgMap.get(i.code) : null;
+      if (value == null) return null;
+      return {
+        code: i.code,
+        name: i.short_name || i.name,
+        full_name: i.name,
+        unit: i.unit,
+        is_composite: false,
+        is_negative: !!i.is_negative,
+        domain: i.domain || null,
+        domain_label: i.domain_label || null,
+        indicator_type: i.indicator_type || null,
+        type: i.indicator_type || null,
+        numerator: i.numerator_text || null,
+        denominator: i.denominator_text || null,
+        data_source: i.data_source_text || null,
+        sort_order: i.sno != null ? Number(i.sno) : null,
+        value,
+        display_value: formatValue(value, i.unit),
+        selected: !composite && selectedInd.code === i.code,
+        available: true,
+      };
+    })
+    .filter(Boolean);
 
-  indicators.unshift({
-    code: 'RANK_COMPOSITE',
-    name: 'Overall composite score',
-    full_name: 'Overall composite score',
-    unit: 'index',
-    is_composite: true,
-    is_negative: false,
-    value: overall,
-    display_value: overall,
-    selected: composite,
-    available: overall != null,
-  });
+  if (overall != null) {
+    indicators.unshift({
+      code: 'RANK_COMPOSITE',
+      name: 'Overall composite score',
+      full_name: 'Overall composite score',
+      unit: 'index',
+      is_composite: true,
+      is_negative: false,
+      value: overall,
+      display_value: formatValue(overall, 'index'),
+      selected: composite,
+      available: true,
+    });
+  }
 
   const { by_type, by_domain } = groupIndicatorsForSummary(
     indicators.filter((i) => !i.is_composite)

@@ -45,15 +45,25 @@ async function resolveScope(filters) {
   return { a, periodRow, districtLgd };
 }
 
+/**
+ * Indicators: keep decimals when |value| < 10; whole number at 10+.
+ * e.g. 9.45 → "9.45", 45.67 → "46", 0.51 → "0.51"
+ */
+function formatDisplayNumber(n) {
+  if (Math.abs(n) < 10) return Number(n.toFixed(2)).toString();
+  return String(Math.round(n));
+}
+
 function formatDisplayValue(value, unit) {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   if (Number.isNaN(n)) return null;
-  if (unit === 'percent') return `${Number(n.toFixed(2))}%`;
-  if (unit === 'amount' || unit === 'rupees') return `Rs.${Number(n.toFixed(2))}`;
-  if (unit === 'index') return Number(n.toFixed(4));
-  if (unit === 'ratio' || unit === 'rate') return `${Number(n.toFixed(2))}`;
-  return `${Number(n.toFixed(2))}`;
+  const formatted = formatDisplayNumber(n);
+  if (unit === 'percent') return `${formatted}%`;
+  if (unit === 'amount' || unit === 'rupees') return `Rs.${formatted}`;
+  if (unit === 'index') return Math.abs(n) < 10 ? Number(n.toFixed(4)) : Math.round(n);
+  if (unit === 'ratio' || unit === 'rate') return formatted;
+  return formatted;
 }
 
 async function loadIndicatorValuesForScope({ year, month, divisionId, districtLgd }) {
