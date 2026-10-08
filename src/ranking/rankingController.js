@@ -175,6 +175,11 @@ function attachScopedRankings(data, scope, geoLevel) {
   // Division/district login: top/bottom 3 + change cards from scoped geo only
   if (isScopedGeoUser(scope)) {
     recomputeExecutiveCards(data, 3);
+    // Narrative is built before scope filter — rebuild so district/block names
+    // match the user's region (e.g. Lucknow division → Lucknow districts only).
+    if (data.view === 'executive_summary' || data.narrative != null) {
+      rankingExecutiveSummaryService.rebuildNarrativeFromPayload(data);
+    }
   }
 
   // Keep gauge / overall in sync with scoped ranking (division avg of districts)

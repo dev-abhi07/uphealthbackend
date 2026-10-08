@@ -333,6 +333,86 @@ function contentLevelLabel(primaryGeo) {
   return 'Division';
 }
 
+function scopeNameKey(name) {
+  return String(normalizeGeoName(name) || name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Keep only geos in the user's region:
+ * - division login → districts in that division
+ * - district/block login → blocks in that district
+ */
+function filterCompositeToScope(rows, primaryGeo, scope) {
+  if (isStatewideScope(scope) || !Array.isArray(rows)) return rows;
+
+  if (primaryGeo === 'district' && scope.level === 'division') {
+    const divId = scope.divisionId != null ? Number(scope.divisionId) : null;
+    const allowed = new Set(
+      (scope.districtNamesInDivision || []).map((n) => scopeNameKey(n))
+    );
+    return rows.filter((r) => {
+      if (
+        divId != null &&
+        r.division_id != null &&
+        Number(r.division_id) === divId
+      ) {
+        return true;
+      }
+      return allowed.has(scopeNameKey(r.name || r.district_name || ''));
+    });
+  }
+
+  if (primaryGeo === 'block') {
+    const lgd = scope.districtLgd != null ? Number(scope.districtLgd) : null;
+    const distKey = scopeNameKey(scope.districtName || '');
+    const allowedBlocks = new Set(
+      (scope.blockNamesInDistrict || []).map((n) => scopeNameKey(n))
+    );
+    return rows.filter((r) => {
+      if (
+        lgd != null &&
+        r.district_lgd != null &&
+        Number(r.district_lgd) === lgd
+      ) {
+        return true;
+      }
+      if (distKey && scopeNameKey(r.district_name || '') === distKey) {
+        return true;
+      }
+      return allowedBlocks.has(scopeNameKey(r.name || ''));
+    });
+  }
+
+  return rows;
+}
+
+/** Re-rank 1..n within each period after geo scope filter. */
+function densifyCompositeRanks(rows) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+  const byPeriod = new Map();
+  for (const r of rows) {
+    const p = r.period || '';
+    if (!byPeriod.has(p)) byPeriod.set(p, []);
+    byPeriod.get(p).push(r);
+  }
+  const out = [];
+  for (const list of byPeriod.values()) {
+    const sorted = [...list].sort((a, b) => {
+      const va = Number(a.value);
+      const vb = Number(b.value);
+      if (vb !== va) return vb - va;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+    sorted.forEach((r, idx) => {
+      out.push({ ...r, rank: idx + 1 });
+    });
+  }
+  return out;
+}
+
 async function getExecutiveSummary({
   period,
   level = 'division',
@@ -382,6 +462,11 @@ async function getExecutiveSummary({
       geo_level: 'division',
     }));
   }
+
+  // Division → only that division's districts; district → only that district's blocks
+  allComposite = densifyCompositeRanks(
+    filterCompositeToScope(allComposite, primaryGeo, scope)
+  );
 
   const current = allComposite
     .filter((r) => r.period === periodRow.label && r.value != null)
@@ -570,7 +655,31 @@ async function getExecutiveSummary({
   };
 }
 
+/**
+ * Rebuild narrative after attachScopedRankings recomputes top/bottom cards.
+ * Keeps summary text aligned with scoped performers.
+ */
+function rebuildNarrativeFromPayload(data) {
+  if (!data || typeof data !== 'object') return data;
+  const levelLabel = contentLevelLabel(data.content_geo_level || 'division');
+  const positives = Array.isArray(data.key_indicators?.positive)
+    ? data.key_indicators.positive
+    : Array.isArray(data.keyIndicators?.positive)
+      ? data.keyIndicators.positive
+      : [];
+  data.narrative = buildNarrative({
+    bestIndicators: positives,
+    topAreas: data.top_performers || data.topPerformers || [],
+    bottomAreas: data.bottom_performers || data.bottomPerformers || [],
+    levelLabel,
+  });
+  return data;
+}
+
 module.exports = {
   getExecutiveSummary,
+  rebuildNarrativeFromPayload,
+  buildNarrative,
+  contentLevelLabel,
   LOWER_IS_BETTER: new Set(),
 };
