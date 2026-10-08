@@ -34,6 +34,56 @@ function geoKey(name) {
   return shortGeoName(name).toLowerCase().replace(/\s+/g, '-');
 }
 
+/** Stable identity for rank-movement links (LGD / id — never bare name alone). */
+function entityKey(row, geoLevel) {
+  const level = String(geoLevel || '').toLowerCase();
+  if (level === 'block' && row.block_lgd != null && row.block_lgd !== '') {
+    return `b-${row.block_lgd}`;
+  }
+  if (level === 'district' && row.district_lgd != null && row.district_lgd !== '') {
+    return `d-${row.district_lgd}`;
+  }
+  if (level === 'division') {
+    if (row.division_id != null && row.division_id !== '') {
+      return `v-${row.division_id}`;
+    }
+    if (row.division_code != null && row.division_code !== '') {
+      return `v-${row.division_code}`;
+    }
+  }
+  // Fallback: name + district so two "Rajpura" blocks in theory stay distinct
+  const dist = row.district_lgd != null ? String(row.district_lgd) : '';
+  return `n-${geoKey(row.name)}${dist ? `@${dist}` : ''}`;
+}
+
+/**
+ * One row per entity per period (outcome sync can emit duplicate block names/LGDs).
+ * Keeps the better statewide rank, then higher composite.
+ */
+function dedupeCompositeRows(rows, geoLevel) {
+  if (!Array.isArray(rows) || !rows.length) return [];
+  const best = new Map();
+  for (const r of rows) {
+    const key = `${r.period || ''}::${entityKey(r, geoLevel)}`;
+    const prev = best.get(key);
+    if (!prev) {
+      best.set(key, r);
+      continue;
+    }
+    const prevRank = prev.rank != null ? Number(prev.rank) : 99999;
+    const nextRank = r.rank != null ? Number(r.rank) : 99999;
+    if (nextRank < prevRank) {
+      best.set(key, r);
+    } else if (
+      nextRank === prevRank &&
+      Number(r.value ?? -Infinity) > Number(prev.value ?? -Infinity)
+    ) {
+      best.set(key, r);
+    }
+  }
+  return [...best.values()];
+}
+
 function displayPeriod(label) {
   const m = String(label || '').match(/^(\d{4})-(\d{2})$/);
   if (!m) return label;
@@ -90,28 +140,55 @@ async function loadCompositeByPeriod(geoLevel, periodLabels) {
     name: r.name,
     value: r.value,
     rank: r.rank,
+    block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+    district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+    division_id: r.division_id != null ? Number(r.division_id) : null,
+    division_code: r.division_code != null ? String(r.division_code) : null,
     district_name: r.district_name || null,
   }));
 }
 
-function buildRankColumn(rows, period, total) {
+function buildRankColumn(rows, period, total, geoLevel) {
   const filtered = rows.filter((r) => r.period === period);
   const sorted = [...filtered].sort((a, b) => {
     if (a.rank != null && b.rank != null) return a.rank - b.rank;
     return (b.value ?? 0) - (a.value ?? 0);
   });
-  return sorted.map((r, idx) => {
+  const mapped = sorted.map((r, idx) => {
     const stateRank = r.rank ?? idx + 1;
     const rank = idx + 1; // dense 1..n within this column (chart / scoped list)
     return {
-      areaId: geoKey(r.name),
+      areaId: entityKey(r, geoLevel),
       areaName: shortGeoName(r.name),
       rank,
       state_rank: stateRank,
       score: round(r.value, 2),
       color: rankTierColor(rank, total),
       district_name: r.district_name || null,
+      block_lgd: r.block_lgd,
+      district_lgd: r.district_lgd,
     };
+  });
+
+  // Same display name, different LGD → keep both, label distinctly
+  const nameCounts = new Map();
+  for (const m of mapped) {
+    const n = String(m.areaName || '').toLowerCase();
+    nameCounts.set(n, (nameCounts.get(n) || 0) + 1);
+  }
+  const nameSeen = new Map();
+  return mapped.map((m) => {
+    const n = String(m.areaName || '').toLowerCase();
+    if ((nameCounts.get(n) || 0) <= 1) return m;
+    const i = (nameSeen.get(n) || 0) + 1;
+    nameSeen.set(n, i);
+    const tag =
+      m.block_lgd != null
+        ? String(m.block_lgd)
+        : m.district_lgd != null
+          ? String(m.district_lgd)
+          : String(i);
+    return { ...m, areaName: `${m.areaName} (${tag})` };
   });
 }
 
@@ -405,12 +482,16 @@ async function getRankInsights({ period, mode = 'division', scope = null } = {})
   const prevLabel = prevMonthLabel(periodRow.label);
   let compositeRows = await loadCompositeByPeriod(contentGeo, periodKeys);
   compositeRows = filterCompositeByScope(compositeRows, scope, contentGeo);
+  // Drop duplicate outcome rows (same block/district LGD twice → double "RAJPURA")
+  compositeRows = dedupeCompositeRows(compositeRows, contentGeo);
 
   const latestCount = compositeRows.filter(
     (r) => r.period === periodRow.label
   ).length;
   const total = Math.max(latestCount, 1);
-  const columns = periodKeys.map((pl) => buildRankColumn(compositeRows, pl, total));
+  const columns = periodKeys.map((pl) =>
+    buildRankColumn(compositeRows, pl, total, contentGeo)
+  );
   const colMax = Math.max(...columns.map((c) => c.length), total);
   const rankInsights = buildRankInsights(columns, periodKeys, levelLabel);
 
