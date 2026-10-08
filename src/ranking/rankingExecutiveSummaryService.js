@@ -120,15 +120,130 @@ function formatGeoList(areas, levelLabel) {
     .join(', ');
 }
 
+/** JUL 2026 → Jul'26 (narrative refresh date). */
+function formatRefreshLabel(periodLabel) {
+  const m = String(periodLabel || '').match(/^(\d{4})-(\d{2})$/);
+  if (!m) {
+    const disp = displayPeriod(periodLabel);
+    const hit = String(disp || '').match(/^([A-Za-z]{3})\s+(\d{4})$/);
+    if (!hit) return disp || periodLabel || '';
+    return `${hit[1].charAt(0)}${hit[1].slice(1).toLowerCase()}'${hit[2].slice(2)}`;
+  }
+  const names = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  const mon = names[Number(m[2]) - 1] || m[2];
+  return `${mon}'${m[1].slice(2)}`;
+}
+
+function namesLooseMatch(a, b) {
+  const na = scopeNameKey(a);
+  const nb = scopeNameKey(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const strip = (s) =>
+    s.replace(/\s+(division|district|block)$/i, '').trim();
+  return strip(na) === strip(nb);
+}
+
+/**
+ * Statewide standing for the logged-in home geo (not regional block/district list).
+ * Division login → rank among divisions; district/block login → rank among districts.
+ */
+async function resolveHomeStanding({ scope, periodLabel }) {
+  if (isStatewideScope(scope) || !periodLabel) return null;
+
+  let homeTier = null;
+  let homeName = null;
+  let homeId = null;
+  let homeLgd = null;
+
+  if (scope.level === 'division') {
+    homeTier = 'division';
+    homeName = scope.divisionName || null;
+    homeId = scope.divisionId != null ? Number(scope.divisionId) : null;
+  } else if (scope.level === 'district' || scope.level === 'block') {
+    homeTier = 'district';
+    homeName = scope.districtName || null;
+    homeId = scope.districtId != null ? Number(scope.districtId) : null;
+    homeLgd = scope.districtLgd != null ? Number(scope.districtLgd) : null;
+  } else {
+    return null;
+  }
+
+  if (!homeName && homeId == null && homeLgd == null) return null;
+
+  let rows = await loadCompositeByPeriod(homeTier, [periodLabel]);
+  if (homeTier === 'district') {
+    const distLookup = await loadDistrictDivisionLookup();
+    rows = enrichDistrictRows(rows, distLookup);
+  }
+  rows = densifyCompositeRanks(
+    (rows || []).filter((r) => r.period === periodLabel && r.value != null)
+  );
+  if (!rows.length) return null;
+
+  const hit = rows.find((r) => {
+    if (homeTier === 'division') {
+      if (homeId != null && Number(r.division_id) === homeId) return true;
+      return namesLooseMatch(r.name, homeName);
+    }
+    if (homeLgd != null && Number(r.district_lgd) === homeLgd) return true;
+    if (homeId != null && Number(r.district_id) === homeId) return true;
+    return namesLooseMatch(r.name, homeName);
+  });
+  if (!hit) return null;
+
+  const rank = hit.rank != null ? Number(hit.rank) : null;
+  const score = round(hit.value, 2);
+  const total = rows.length;
+  if (rank == null || score == null || !total) return null;
+
+  const areaName = shortGeoName(hit.name || homeName);
+  const geoPlural = homeTier === 'division' ? 'divisions' : 'districts';
+  const refreshLabel = formatRefreshLabel(periodLabel);
+
+  return {
+    area_name: areaName,
+    short_name: areaName,
+    geo_level: homeTier,
+    geo_plural: geoPlural,
+    rank,
+    total,
+    score,
+    period: periodLabel,
+    period_display: displayPeriod(periodLabel),
+    refresh_label: refreshLabel,
+    rank_label: `${rank} out of ${total}`,
+    text: `Based on the latest data refresh on ${refreshLabel}, ${areaName} stands at a rank of ${rank} out of ${total} ${geoPlural} with a composite score of ${score}.`,
+  };
+}
+
 function buildNarrative({
   bestIndicators = [],
   topAreas = [],
   bottomAreas = [],
   levelLabel = 'Division',
+  homeStanding = null,
 }) {
   const levelPlural = `${levelLabel}s`.toLowerCase();
   const compared = ' as compared to last month';
   const paragraphs = [];
+
+  if (homeStanding?.text) {
+    paragraphs.push(String(homeStanding.text).trim());
+  }
 
   const best = bestIndicators[0];
   const nextBest = bestIndicators[1];
@@ -444,6 +559,12 @@ async function getExecutiveSummary({
   const imported = new Set(importedLabels);
   const availableHistory = historyLabels.filter((l) => imported.has(l));
 
+  // Home geo statewide standing (before regional filter) for narrative lead line
+  const homeStanding = await resolveHomeStanding({
+    scope,
+    periodLabel: periodRow.label,
+  });
+
   let allComposite;
   if (primaryGeo === 'district') {
     const distLookup = await loadDistrictDivisionLookup();
@@ -502,6 +623,7 @@ async function getExecutiveSummary({
     topAreas: top_3,
     bottomAreas: bottom_3,
     levelLabel,
+    homeStanding,
   });
 
   const map_ranking = withMeta.map((r) => ({
@@ -621,6 +743,7 @@ async function getExecutiveSummary({
     child_count: 0,
     narrative,
     narrative_badge: displayPeriod(periodRow.label),
+    home_standing: homeStanding,
     top_performers: top_3,
     bottom_performers: bottom_3,
     key_indicators: {
@@ -672,6 +795,7 @@ function rebuildNarrativeFromPayload(data) {
     topAreas: data.top_performers || data.topPerformers || [],
     bottomAreas: data.bottom_performers || data.bottomPerformers || [],
     levelLabel,
+    homeStanding: data.home_standing || data.homeStanding || null,
   });
   return data;
 }
