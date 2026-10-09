@@ -273,14 +273,22 @@ async function loadIndicatorMoM(geoLevel, currentLabel, prevLabel) {
       isNegative: lowerIsBetter,
     });
     for (const r of rows) {
-      const key = `${geoKey(r.name)}::${ind.code}`;
+      const idPart =
+        r.block_lgd != null
+          ? `b-${r.block_lgd}`
+          : r.district_lgd != null
+            ? `d-${r.district_lgd}`
+            : geoKey(r.name);
+      const key = `${idPart}::${ind.code}`;
       if (!byKey.has(key)) {
         byKey.set(key, {
-          areaId: geoKey(r.name),
+          areaId: idPart,
           areaName: shortGeoName(r.name),
           code: ind.code,
           indicatorName: (ind.short_name || ind.name || ind.code).toUpperCase(),
           lowerIsBetter,
+          district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+          district_name: r.district_name || null,
           current: null,
           previous: null,
         });
@@ -406,9 +414,16 @@ function allowedAreaNames(scope, contentGeo) {
       return new Set([normalizeName(scope.blockName)].filter(Boolean));
     }
     if (scope.level === 'district') {
-      return new Set(
-        (scope.blockNamesInDistrict || []).map((n) => normalizeName(n))
-      );
+      // Prefer district_lgd (keeps Urban / synthetic LGDs); name set is fallback.
+      return {
+        type: 'block_in_district',
+        districtLgd:
+          scope.districtLgd != null ? Number(scope.districtLgd) : null,
+        districtName: normalizeName(scope.districtName || ''),
+        blocks: new Set(
+          (scope.blockNamesInDistrict || []).map((n) => normalizeName(n))
+        ),
+      };
     }
     if (scope.level === 'division') {
       // Division login on block content: all blocks under districts in that division
@@ -433,6 +448,25 @@ function filterCompositeByScope(rows, scope, contentGeo) {
   if (allowed instanceof Set) {
     return rows.filter((r) => nameAllowed(r.name, allowed));
   }
+  if (allowed.type === 'block_in_district') {
+    // Strict district scope — never keep foreign blocks via shared names.
+    return rows.filter((r) => {
+      if (
+        allowed.districtLgd != null &&
+        r.district_lgd != null &&
+        Number(r.district_lgd) === allowed.districtLgd
+      ) {
+        return true;
+      }
+      if (
+        allowed.districtName &&
+        normalizeName(r.district_name || '') === allowed.districtName
+      ) {
+        return true;
+      }
+      return false;
+    });
+  }
   if (allowed.type === 'block_by_district') {
     return rows.filter((r) =>
       allowed.districts.has(normalizeName(r.district_name || ''))
@@ -446,6 +480,29 @@ function filterIndicatorRowsByScope(rows, scope, contentGeo) {
   if (!allowed) return rows;
   if (allowed instanceof Set) {
     return rows.filter((r) => nameAllowed(r.areaName, allowed));
+  }
+  if (allowed.type === 'block_in_district') {
+    return rows.filter((r) => {
+      if (
+        allowed.districtLgd != null &&
+        r.district_lgd != null &&
+        Number(r.district_lgd) === allowed.districtLgd
+      ) {
+        return true;
+      }
+      if (
+        allowed.districtName &&
+        normalizeName(r.district_name || '') === allowed.districtName
+      ) {
+        return true;
+      }
+      return false;
+    });
+  }
+  if (allowed.type === 'block_by_district') {
+    return rows.filter((r) =>
+      allowed.districts.has(normalizeName(r.district_name || ''))
+    );
   }
   return rows;
 }
@@ -533,6 +590,8 @@ async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
       period: r.period,
       geo_name: r.name,
       district_name: r.district_name || null,
+      district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+      block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
       rank: r.rank,
       value: r.value,
       code: 'RANK_COMPOSITE',
@@ -568,6 +627,8 @@ async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
         period: r.period,
         geo_name: r.name,
         district_name: r.district_name || null,
+        district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+        block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
         rank: r.rank,
         value: r.value,
         code: ind.code,
@@ -619,18 +680,44 @@ async function getIndicatorPerformanceMatrix({
   const allowed = allowedAreaNames(scope, contentGeo);
   if (allowed instanceof Set) {
     rows = rows.filter((r) => nameAllowed(r.geo_name, allowed));
+  } else if (allowed?.type === 'block_in_district') {
+    // District login: only that district's blocks (was unfiltered → all ~900)
+    rows = rows.filter((r) => {
+      if (
+        allowed.districtLgd != null &&
+        r.district_lgd != null &&
+        Number(r.district_lgd) === allowed.districtLgd
+      ) {
+        return true;
+      }
+      if (
+        allowed.districtName &&
+        normalizeName(r.district_name || '') === allowed.districtName
+      ) {
+        return true;
+      }
+      return false;
+    });
   } else if (allowed?.type === 'block_by_district') {
     rows = rows.filter((r) =>
       allowed.districts.has(normalizeName(r.district_name || ''))
     );
   }
 
+  const matrixAreaId = (r) => {
+    if (contentGeo === 'block' && r.block_lgd != null) return `b-${r.block_lgd}`;
+    if (contentGeo === 'district' && r.district_lgd != null) {
+      return `d-${r.district_lgd}`;
+    }
+    return geoKey(r.geo_name);
+  };
+
   const areaMap = new Map();
   const indicatorMap = new Map();
   const valueMap = new Map();
 
   rows.forEach((r) => {
-    const areaId = geoKey(r.geo_name);
+    const areaId = matrixAreaId(r);
     if (!areaMap.has(areaId)) {
       areaMap.set(areaId, {
         id: areaId,
@@ -666,20 +753,20 @@ async function getIndicatorPerformanceMatrix({
     (r) => r.is_composite && r.period === periodRow.label
   );
   rankRows.forEach((r) => {
-    const areaId = geoKey(r.geo_name);
+    const areaId = matrixAreaId(r);
     const key = `${areaId}::RANK_COMPOSITE::${r.period}`;
     valueMap.set(key, { value: num(r.rank ?? r.value), rank: r.rank });
   });
 
   const prevRankKey = (areaId) => `${areaId}::RANK_COMPOSITE::${prevLabel}`;
   rankRows.forEach((r) => {
-    const areaId = geoKey(r.geo_name);
+    const areaId = matrixAreaId(r);
     if (prevLabel) {
       const prevRow = rows.find(
         (x) =>
           x.is_composite &&
           x.period === prevLabel &&
-          geoKey(x.geo_name) === areaId
+          matrixAreaId(x) === areaId
       );
       if (prevRow) {
         valueMap.set(prevRankKey(areaId), {

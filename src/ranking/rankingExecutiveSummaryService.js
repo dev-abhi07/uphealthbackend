@@ -62,12 +62,19 @@ function trailingMonths(label, count = 3) {
   return out;
 }
 
+/**
+ * Same tercile cuts as Map View / outcomeBlockService.bandByTercile:
+ * topN = ceil(n/3); top = rank≤topN; bottom = rank > n-topN; else moderate.
+ * (12→4/4/4, 13→5/3/5, 18→6/6/6)
+ */
 function bandForRank(rank, total) {
   if (rank == null || !total) return null;
-  const topN = total <= 18 ? 6 : Math.ceil(total / 3);
-  const bottomN = topN;
-  if (rank <= topN) return 'top';
-  if (rank > total - bottomN) return 'bottom';
+  const r = Number(rank);
+  const n = Math.max(1, Number(total) || 1);
+  if (!Number.isFinite(r) || r < 1) return 'moderate';
+  const topN = Math.max(1, Math.ceil(n / 3));
+  if (r <= topN) return 'top';
+  if (r > n - topN) return 'bottom';
   return 'moderate';
 }
 
@@ -629,6 +636,15 @@ async function getExecutiveSummary({
   const map_ranking = withMeta.map((r) => ({
     ...r,
     color_band: r.band,
+    band: r.band,
+    color: TIER_COLORS[r.band] || TIER_COLORS.moderate,
+    // Stable ids for FE map join (block geo B_LGD / district DT_LGD)
+    area_id:
+      r.block_lgd != null
+        ? String(r.block_lgd)
+        : r.district_lgd != null
+          ? String(r.district_lgd)
+          : undefined,
   }));
 
   const performance_change = buildPerformanceChange(
