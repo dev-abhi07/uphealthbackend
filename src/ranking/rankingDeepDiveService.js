@@ -15,6 +15,7 @@ const {
   ASPIRATIONAL_DISTRICTS,
   parseFilter,
   districtInCategory,
+  blockInAspirational,
   divisionsMatchingCategory,
   districtNamesForFilter,
   normalizeKey,
@@ -746,7 +747,8 @@ async function getDeepDiveDashboard({
     ) {
       const { rows } = await query(
         `
-        SELECT d.name AS district_name, dv.name AS division_name, dv.code AS div_code
+        SELECT d.name AS district_name, dv.name AS division_name, dv.code AS div_code,
+               d.lgd_code
         FROM district d
         JOIN division dv ON dv.id = d.division_id
         WHERE d.is_active = TRUE
@@ -844,7 +846,8 @@ async function getDeepDiveDashboard({
   // District master → division for hierarchy / filters
   const { rows: districtMaster } = await query(
     `
-    SELECT d.name AS district_name, dv.name AS division_name, dv.code AS div_code
+    SELECT d.name AS district_name, dv.name AS division_name, dv.code AS div_code,
+           d.lgd_code
     FROM district d
     JOIN division dv ON dv.id = d.division_id
     WHERE d.is_active = TRUE
@@ -965,14 +968,32 @@ async function getDeepDiveDashboard({
     return String(na).localeCompare(String(nb));
   });
 
-  // Category filter: aspirational | high_priority (skip at block level)
+  // Category filter: aspirational | high_priority (districts + aspirational blocks)
   const filterKey = parseFilter(filter);
   let filter_note = null;
-  if (filterKey !== 'all' && geoLevel !== 'block') {
-    if (geoLevel === 'district') {
-      geoKeys = geoKeys.filter((k) =>
-        districtInCategory(geoMeta.get(k)?.name || k, filterKey)
-      );
+  if (filterKey !== 'all') {
+    if (geoLevel === 'block') {
+      if (filterKey === 'aspirational') {
+        geoKeys = geoKeys.filter((k) => {
+          const meta = geoMeta.get(k) || {};
+          return blockInAspirational(meta.block_lgd, meta.district_lgd);
+        });
+      } else {
+        // High priority: blocks whose parent district is in category
+        geoKeys = geoKeys.filter((k) => {
+          const meta = geoMeta.get(k) || {};
+          return districtInCategory(
+            meta.district_name || '',
+            filterKey,
+            meta.district_lgd
+          );
+        });
+      }
+    } else if (geoLevel === 'district') {
+      geoKeys = geoKeys.filter((k) => {
+        const meta = geoMeta.get(k) || {};
+        return districtInCategory(meta.name || k, filterKey, meta.district_lgd);
+      });
     } else if (geoLevel === 'division') {
       const allowedDivs = divisionsMatchingCategory(districtMaster, filterKey);
       if (allowedDivs) {
@@ -984,11 +1005,11 @@ async function getDeepDiveDashboard({
     if (!geoKeys.length) {
       filter_note =
         filterKey === 'aspirational'
-          ? 'No aspirational districts matched for this geo level'
+          ? geoLevel === 'block'
+            ? 'No aspirational blocks matched for this geo level'
+            : 'No aspirational districts matched for this geo level'
           : 'No high_priority districts matched for this geo level';
     }
-  } else if (filterKey !== 'all' && geoLevel === 'block') {
-    filter_note = 'Category filter skipped at block level';
   }
 
   const isComposite = !!ind.is_composite;
@@ -1058,6 +1079,8 @@ async function getDeepDiveDashboard({
   });
   /** @type {Map<string, Map<string, Map<string, {value:number|null, rank:number|null}>>>} */
   const blocksByDistrict = new Map();
+  /** @type {Map<string, Map<string, {block_lgd:any, district_lgd:any}>>} */
+  const blockMetaByDistrict = new Map();
   for (const r of blockRows) {
     const distKey = String(r.district_name || '').toLowerCase();
     if (!distKey) continue;
@@ -1068,21 +1091,39 @@ async function getDeepDiveDashboard({
       value: num(r.value),
       rank: r.rank != null ? Number(r.rank) : null,
     });
+    if (!blockMetaByDistrict.has(distKey)) blockMetaByDistrict.set(distKey, new Map());
+    const metaMap = blockMetaByDistrict.get(distKey);
+    if (!metaMap.has(r.geo_name)) {
+      metaMap.set(r.geo_name, {
+        block_lgd: r.block_lgd || null,
+        district_lgd: r.district_lgd || null,
+      });
+    }
   }
 
   function buildBlockChildren(districtName) {
-    const byBlock = blocksByDistrict.get(String(districtName).toLowerCase());
+    const distKey = String(districtName).toLowerCase();
+    const byBlock = blocksByDistrict.get(distKey);
     if (!byBlock) return [];
+    const metaMap = blockMetaByDistrict.get(distKey) || new Map();
     return [...byBlock.keys()]
-      .map((blockName) =>
-        buildFromSeries(blockName, byBlock.get(blockName) || new Map(), {
+      .filter((blockName) => {
+        if (filterKey !== 'aspirational') return true;
+        const meta = metaMap.get(blockName) || {};
+        return blockInAspirational(meta.block_lgd, meta.district_lgd);
+      })
+      .map((blockName) => {
+        const meta = metaMap.get(blockName) || {};
+        return buildFromSeries(blockName, byBlock.get(blockName) || new Map(), {
           geo_level: 'block',
           district_name: districtName,
+          block_lgd: meta.block_lgd || null,
+          district_lgd: meta.district_lgd || null,
           children: null,
           child_count: 0,
           expandable: false,
-        })
-      )
+        });
+      })
       .sort(sortRankRows);
   }
 
@@ -1123,6 +1164,7 @@ async function getDeepDiveDashboard({
         districtInCategory(n, filterKey)
       );
     }
+    // Under Aspiration, nested blocks are already filtered in buildBlockChildren
 
     rankings = rankings
       .map((divRow) => {
