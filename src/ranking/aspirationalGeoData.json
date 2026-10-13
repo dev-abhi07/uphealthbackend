@@ -1,0 +1,867 @@
+{
+  "generated_from": "Aspirational_blocks.xlsx",
+  "district_count": 42,
+  "block_count": 108,
+  "districts": [
+    {
+      "district": "Aligarh",
+      "district_lgd": "119",
+      "block_count": 1
+    },
+    {
+      "district": "Ambedkar nagar",
+      "district_lgd": "121",
+      "block_count": 3
+    },
+    {
+      "district": "Amethi",
+      "district_lgd": "640",
+      "block_count": 3
+    },
+    {
+      "district": "Bahraich",
+      "district_lgd": "125",
+      "block_count": 1
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block_count": 8
+    },
+    {
+      "district": "Balrampur",
+      "district_lgd": "127",
+      "block_count": 1
+    },
+    {
+      "district": "Banda",
+      "district_lgd": "128",
+      "block_count": 3
+    },
+    {
+      "district": "Barabanki",
+      "district_lgd": "129",
+      "block_count": 2
+    },
+    {
+      "district": "Bareilly",
+      "district_lgd": "130",
+      "block_count": 5
+    },
+    {
+      "district": "Basti",
+      "district_lgd": "131",
+      "block_count": 4
+    },
+    {
+      "district": "Bijnor",
+      "district_lgd": "132",
+      "block_count": 2
+    },
+    {
+      "district": "Badaun",
+      "district_lgd": "133",
+      "block_count": 6
+    },
+    {
+      "district": "Chandauli",
+      "district_lgd": "135",
+      "block_count": 1
+    },
+    {
+      "district": "Chitrakoot",
+      "district_lgd": "136",
+      "block_count": 1
+    },
+    {
+      "district": "Deoria",
+      "district_lgd": "137",
+      "block_count": 1
+    },
+    {
+      "district": "Etah",
+      "district_lgd": "138",
+      "block_count": 3
+    },
+    {
+      "district": "Farrukhabad",
+      "district_lgd": "141",
+      "block_count": 2
+    },
+    {
+      "district": "Fatehpur",
+      "district_lgd": "142",
+      "block_count": 1
+    },
+    {
+      "district": "Ghazipur",
+      "district_lgd": "146",
+      "block_count": 6
+    },
+    {
+      "district": "Gonda",
+      "district_lgd": "147",
+      "block_count": 3
+    },
+    {
+      "district": "Gorakhpur",
+      "district_lgd": "148",
+      "block_count": 3
+    },
+    {
+      "district": "Hardoi",
+      "district_lgd": "150",
+      "block_count": 1
+    },
+    {
+      "district": "Jalaun",
+      "district_lgd": "151",
+      "block_count": 2
+    },
+    {
+      "district": "Jaunpur",
+      "district_lgd": "152",
+      "block_count": 2
+    },
+    {
+      "district": "Kasganj",
+      "district_lgd": "633",
+      "block_count": 3
+    },
+    {
+      "district": "Kaushambi",
+      "district_lgd": "158",
+      "block_count": 2
+    },
+    {
+      "district": "Lakhimpur Kheri",
+      "district_lgd": "159",
+      "block_count": 4
+    },
+    {
+      "district": "Kushinagar",
+      "district_lgd": "160",
+      "block_count": 1
+    },
+    {
+      "district": "Lalitpur",
+      "district_lgd": "161",
+      "block_count": 1
+    },
+    {
+      "district": "Maharajganj",
+      "district_lgd": "164",
+      "block_count": 6
+    },
+    {
+      "district": "Mahoba",
+      "district_lgd": "165",
+      "block_count": 1
+    },
+    {
+      "district": "Mirzapur",
+      "district_lgd": "170",
+      "block_count": 5
+    },
+    {
+      "district": "Pilibhit",
+      "district_lgd": "173",
+      "block_count": 1
+    },
+    {
+      "district": "Prayagraj",
+      "district_lgd": "120",
+      "block_count": 3
+    },
+    {
+      "district": "Rampur",
+      "district_lgd": "176",
+      "block_count": 1
+    },
+    {
+      "district": "Sambhal",
+      "district_lgd": "659",
+      "block_count": 7
+    },
+    {
+      "district": "Sant Kabir Nagar",
+      "district_lgd": "178",
+      "block_count": 3
+    },
+    {
+      "district": "bhadohi",
+      "district_lgd": "179",
+      "block_count": 1
+    },
+    {
+      "district": "Shravasti",
+      "district_lgd": "181",
+      "block_count": 1
+    },
+    {
+      "district": "Siddharth Nagar",
+      "district_lgd": "182",
+      "block_count": 1
+    },
+    {
+      "district": "Sitapur",
+      "district_lgd": "183",
+      "block_count": 1
+    },
+    {
+      "district": "Sonbhadra",
+      "district_lgd": "184",
+      "block_count": 1
+    }
+  ],
+  "blocks": [
+    {
+      "district": "Aligarh",
+      "district_lgd": "119",
+      "block": "Gangiri",
+      "block_lgd": "823"
+    },
+    {
+      "district": "Ambedkar nagar",
+      "district_lgd": "121",
+      "block": "Bhiti",
+      "block_lgd": "852"
+    },
+    {
+      "district": "Ambedkar nagar",
+      "district_lgd": "121",
+      "block": "Bhiyaon",
+      "block_lgd": "853"
+    },
+    {
+      "district": "Ambedkar nagar",
+      "district_lgd": "121",
+      "block": "Tanda",
+      "block_lgd": "858"
+    },
+    {
+      "district": "Amethi",
+      "district_lgd": "640",
+      "block": "Jagdishpur",
+      "block_lgd": "1587"
+    },
+    {
+      "district": "Amethi",
+      "district_lgd": "640",
+      "block": "Jamo",
+      "block_lgd": "1589"
+    },
+    {
+      "district": "Amethi",
+      "district_lgd": "640",
+      "block": "Shukul Bazar",
+      "block_lgd": "1599"
+    },
+    {
+      "district": "Bahraich",
+      "district_lgd": "125",
+      "block": "Huzoorpur",
+      "block_lgd": "896"
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block": "Bansdih",
+      "block_lgd": "909"
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block": "Chilkahar",
+      "block_lgd": "912"
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block": "Garwar",
+      "block_lgd": "914"
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block": "Hanumanganj",
+      "block_lgd": "915"
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block": "Maniyar",
+      "block_lgd": "916"
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block": "Pandah",
+      "block_lgd": "920"
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block": "Rasra",
+      "block_lgd": "921"
+    },
+    {
+      "district": "Ballia",
+      "district_lgd": "126",
+      "block": "Sohaon",
+      "block_lgd": "924"
+    },
+    {
+      "district": "Balrampur",
+      "district_lgd": "127",
+      "block": "Sriduttganj",
+      "block_lgd": "931"
+    },
+    {
+      "district": "Banda",
+      "district_lgd": "128",
+      "block": "Baberu",
+      "block_lgd": "934"
+    },
+    {
+      "district": "Banda",
+      "district_lgd": "128",
+      "block": "Bisanda",
+      "block_lgd": "936"
+    },
+    {
+      "district": "Banda",
+      "district_lgd": "128",
+      "block": "Kamasin",
+      "block_lgd": "938"
+    },
+    {
+      "district": "Barabanki",
+      "district_lgd": "129",
+      "block": "Nindaura",
+      "block_lgd": "951"
+    },
+    {
+      "district": "Barabanki",
+      "district_lgd": "129",
+      "block": "Puredalai",
+      "block_lgd": "952"
+    },
+    {
+      "district": "Bareilly",
+      "district_lgd": "130",
+      "block": "Baheri",
+      "block_lgd": "960"
+    },
+    {
+      "district": "Bareilly",
+      "district_lgd": "130",
+      "block": "Fatehganj Pashchim",
+      "block_lgd": "967"
+    },
+    {
+      "district": "Bareilly",
+      "district_lgd": "130",
+      "block": "Majhgawan",
+      "block_lgd": "969"
+    },
+    {
+      "district": "Bareilly",
+      "district_lgd": "130",
+      "block": "Richha",
+      "block_lgd": "965"
+    },
+    {
+      "district": "Bareilly",
+      "district_lgd": "130",
+      "block": "Shergarh",
+      "block_lgd": "973"
+    },
+    {
+      "district": "Basti",
+      "district_lgd": "131",
+      "block": "Harraiya",
+      "block_lgd": "979"
+    },
+    {
+      "district": "Basti",
+      "district_lgd": "131",
+      "block": "Kudaraha",
+      "block_lgd": "981"
+    },
+    {
+      "district": "Basti",
+      "district_lgd": "131",
+      "block": "Saltaua Gopal Pur",
+      "block_lgd": "985"
+    },
+    {
+      "district": "Basti",
+      "district_lgd": "131",
+      "block": "Vikram Jot",
+      "block_lgd": "987"
+    },
+    {
+      "district": "Bijnor",
+      "district_lgd": "132",
+      "block": "Kotwali",
+      "block_lgd": "994"
+    },
+    {
+      "district": "Bijnor",
+      "district_lgd": "132",
+      "block": "Najibabad",
+      "block_lgd": "996"
+    },
+    {
+      "district": "Badaun",
+      "district_lgd": "133",
+      "block": "Ambiapur",
+      "block_lgd": "999"
+    },
+    {
+      "district": "Badaun",
+      "district_lgd": "133",
+      "block": "Asafpur",
+      "block_lgd": "1000"
+    },
+    {
+      "district": "Badaun",
+      "district_lgd": "133",
+      "block": "Qadar Chowk",
+      "block_lgd": "1009"
+    },
+    {
+      "district": "Badaun",
+      "district_lgd": "133",
+      "block": "Salarpur",
+      "block_lgd": "1012"
+    },
+    {
+      "district": "Badaun",
+      "district_lgd": "133",
+      "block": "Usawan",
+      "block_lgd": "1015"
+    },
+    {
+      "district": "Badaun",
+      "district_lgd": "133",
+      "block": "Wazirganj",
+      "block_lgd": "1016"
+    },
+    {
+      "district": "Chandauli",
+      "district_lgd": "135",
+      "block": "Chahniya",
+      "block_lgd": "1034"
+    },
+    {
+      "district": "Chitrakoot",
+      "district_lgd": "136",
+      "block": "RamNagar",
+      "block_lgd": "1046"
+    },
+    {
+      "district": "Deoria",
+      "district_lgd": "137",
+      "block": "Gauri Bazar",
+      "block_lgd": "1056"
+    },
+    {
+      "district": "Etah",
+      "district_lgd": "138",
+      "block": "Awagarh",
+      "block_lgd": "1065"
+    },
+    {
+      "district": "Etah",
+      "district_lgd": "138",
+      "block": "Jaithara",
+      "block_lgd": "1067"
+    },
+    {
+      "district": "Etah",
+      "district_lgd": "138",
+      "block": "Sakit",
+      "block_lgd": "1074"
+    },
+    {
+      "district": "Farrukhabad",
+      "district_lgd": "141",
+      "block": "Nawabganj",
+      "block_lgd": "1100"
+    },
+    {
+      "district": "Farrukhabad",
+      "district_lgd": "141",
+      "block": "Rajepur",
+      "block_lgd": "1101"
+    },
+    {
+      "district": "Fatehpur",
+      "district_lgd": "142",
+      "block": "Hathgaon",
+      "block_lgd": "1111"
+    },
+    {
+      "district": "Ghazipur",
+      "district_lgd": "146",
+      "block": "Deokali",
+      "block_lgd": "1139"
+    },
+    {
+      "district": "Ghazipur",
+      "district_lgd": "146",
+      "block": "Mardah",
+      "block_lgd": "1145"
+    },
+    {
+      "district": "Ghazipur",
+      "district_lgd": "146",
+      "block": "Revatipur",
+      "block_lgd": "1147"
+    },
+    {
+      "district": "Ghazipur",
+      "district_lgd": "146",
+      "block": "Sadat",
+      "block_lgd": "1148"
+    },
+    {
+      "district": "Ghazipur",
+      "district_lgd": "146",
+      "block": "Varachakwar",
+      "block_lgd": "1150"
+    },
+    {
+      "district": "Ghazipur",
+      "district_lgd": "146",
+      "block": "Virno",
+      "block_lgd": "1151"
+    },
+    {
+      "district": "Gonda",
+      "district_lgd": "147",
+      "block": "Babhanjot",
+      "block_lgd": "1153"
+    },
+    {
+      "district": "Gonda",
+      "district_lgd": "147",
+      "block": "Pandri Krapal",
+      "block_lgd": "1164"
+    },
+    {
+      "district": "Gonda",
+      "district_lgd": "147",
+      "block": "Rupaidih",
+      "block_lgd": "1166"
+    },
+    {
+      "district": "Gorakhpur",
+      "district_lgd": "148",
+      "block": "Bansgaon",
+      "block_lgd": "1169"
+    },
+    {
+      "district": "Gorakhpur",
+      "district_lgd": "148",
+      "block": "Brahmpur",
+      "block_lgd": "1173"
+    },
+    {
+      "district": "Gorakhpur",
+      "district_lgd": "148",
+      "block": "Campierganj",
+      "block_lgd": "1174"
+    },
+    {
+      "district": "Hardoi",
+      "district_lgd": "150",
+      "block": "Sandila",
+      "block_lgd": "1209"
+    },
+    {
+      "district": "Jalaun",
+      "district_lgd": "151",
+      "block": "Jalaun",
+      "block_lgd": "1215"
+    },
+    {
+      "district": "Jalaun",
+      "district_lgd": "151",
+      "block": "Rampura",
+      "block_lgd": "1222"
+    },
+    {
+      "district": "Jaunpur",
+      "district_lgd": "152",
+      "block": "Machhlishahr",
+      "block_lgd": "1232"
+    },
+    {
+      "district": "Jaunpur",
+      "district_lgd": "152",
+      "block": "Rampur",
+      "block_lgd": "1238"
+    },
+    {
+      "district": "Kasganj",
+      "district_lgd": "633",
+      "block": "Amanpur",
+      "block_lgd": "1064"
+    },
+    {
+      "district": "Kasganj",
+      "district_lgd": "633",
+      "block": "Ganj Dundwara",
+      "block_lgd": "1066"
+    },
+    {
+      "district": "Kasganj",
+      "district_lgd": "633",
+      "block": "Soron",
+      "block_lgd": "1077"
+    },
+    {
+      "district": "Kaushambi",
+      "district_lgd": "158",
+      "block": "Kaushambi",
+      "block_lgd": "1288"
+    },
+    {
+      "district": "Kaushambi",
+      "district_lgd": "158",
+      "block": "Manjhanpur",
+      "block_lgd": "1289"
+    },
+    {
+      "district": "Lakhimpur Kheri",
+      "district_lgd": "159",
+      "block": "Bankeyganj",
+      "block_lgd": "1294"
+    },
+    {
+      "district": "Lakhimpur Kheri",
+      "district_lgd": "159",
+      "block": "Dhaurehra",
+      "block_lgd": "1297"
+    },
+    {
+      "district": "Lakhimpur Kheri",
+      "district_lgd": "159",
+      "block": "Isanagar",
+      "block_lgd": "1298"
+    },
+    {
+      "district": "Lakhimpur Kheri",
+      "district_lgd": "159",
+      "block": "Ramia Behar",
+      "block_lgd": "1308"
+    },
+    {
+      "district": "Kushinagar",
+      "district_lgd": "160",
+      "block": "Vishunpura",
+      "block_lgd": "1322"
+    },
+    {
+      "district": "Lalitpur",
+      "district_lgd": "161",
+      "block": "Mandawara",
+      "block_lgd": "1326"
+    },
+    {
+      "district": "Maharajganj",
+      "district_lgd": "164",
+      "block": "Mahrajganj",
+      "block_lgd": "1348"
+    },
+    {
+      "district": "Maharajganj",
+      "district_lgd": "164",
+      "block": "Mithaura",
+      "block_lgd": "1349"
+    },
+    {
+      "district": "Maharajganj",
+      "district_lgd": "164",
+      "block": "Nautanawa",
+      "block_lgd": "1350"
+    },
+    {
+      "district": "Maharajganj",
+      "district_lgd": "164",
+      "block": "Nichlaul",
+      "block_lgd": "1351"
+    },
+    {
+      "district": "Maharajganj",
+      "district_lgd": "164",
+      "block": "Paniwara",
+      "block_lgd": "1352"
+    },
+    {
+      "district": "Maharajganj",
+      "district_lgd": "164",
+      "block": "Partawal",
+      "block_lgd": "1353"
+    },
+    {
+      "district": "Mahoba",
+      "district_lgd": "165",
+      "block": "Kabrai (Mahoba)",
+      "block_lgd": "1358"
+    },
+    {
+      "district": "Mirzapur",
+      "district_lgd": "170",
+      "block": "Hallia",
+      "block_lgd": "1401"
+    },
+    {
+      "district": "Mirzapur",
+      "district_lgd": "170",
+      "block": "Marihan",
+      "block_lgd": "1409"
+    },
+    {
+      "district": "Mirzapur",
+      "district_lgd": "170",
+      "block": "Nagar (City)",
+      "block_lgd": "1406"
+    },
+    {
+      "district": "Mirzapur",
+      "district_lgd": "170",
+      "block": "Pahari",
+      "block_lgd": "1408"
+    },
+    {
+      "district": "Mirzapur",
+      "district_lgd": "170",
+      "block": "Rajgarh",
+      "block_lgd": "1410"
+    },
+    {
+      "district": "Pilibhit",
+      "district_lgd": "173",
+      "block": "Puranpur",
+      "block_lgd": "1445"
+    },
+    {
+      "district": "Prayagraj",
+      "district_lgd": "120",
+      "block": "Bahria",
+      "block_lgd": "831"
+    },
+    {
+      "district": "Prayagraj",
+      "district_lgd": "120",
+      "block": "Koraon",
+      "block_lgd": "840"
+    },
+    {
+      "district": "Prayagraj",
+      "district_lgd": "120",
+      "block": "Manda",
+      "block_lgd": "841"
+    },
+    {
+      "district": "Rampur",
+      "district_lgd": "176",
+      "block": "Saidnagar",
+      "block_lgd": "1487"
+    },
+    {
+      "district": "Sambhal",
+      "district_lgd": "659",
+      "block": "Asmauli",
+      "block_lgd": "1412"
+    },
+    {
+      "district": "Sambhal",
+      "district_lgd": "659",
+      "block": "Baniyakhera",
+      "block_lgd": "1414"
+    },
+    {
+      "district": "Sambhal",
+      "district_lgd": "659",
+      "block": "Gunnaur",
+      "block_lgd": "1004"
+    },
+    {
+      "district": "Sambhal",
+      "district_lgd": "659",
+      "block": "Janawai",
+      "block_lgd": "1007"
+    },
+    {
+      "district": "Sambhal",
+      "district_lgd": "659",
+      "block": "Panwasa",
+      "block_lgd": "1422"
+    },
+    {
+      "district": "Sambhal",
+      "district_lgd": "659",
+      "block": "Rajpura",
+      "block_lgd": "1010"
+    },
+    {
+      "district": "Sambhal",
+      "district_lgd": "659",
+      "block": "Sambhal",
+      "block_lgd": "1423"
+    },
+    {
+      "district": "Sant Kabir Nagar",
+      "district_lgd": "178",
+      "block": "Baghauli",
+      "block_lgd": "1501"
+    },
+    {
+      "district": "Sant Kabir Nagar",
+      "district_lgd": "178",
+      "block": "Pauli",
+      "block_lgd": "1507"
+    },
+    {
+      "district": "Sant Kabir Nagar",
+      "district_lgd": "178",
+      "block": "Sotha",
+      "block_lgd": "1508"
+    },
+    {
+      "district": "bhadohi",
+      "district_lgd": "179",
+      "block": "Aurai",
+      "block_lgd": "1511"
+    },
+    {
+      "district": "Shravasti",
+      "district_lgd": "181",
+      "block": "Jamunaha",
+      "block_lgd": "1534"
+    },
+    {
+      "district": "Siddharth Nagar",
+      "district_lgd": "182",
+      "block": "Khesraha",
+      "block_lgd": "1543"
+    },
+    {
+      "district": "Sitapur",
+      "district_lgd": "183",
+      "block": "Biswan",
+      "block_lgd": "1552"
+    },
+    {
+      "district": "Sonbhadra",
+      "district_lgd": "184",
+      "block": "Chatra",
+      "block_lgd": "1570"
+    }
+  ]
+}

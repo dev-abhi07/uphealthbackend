@@ -415,7 +415,7 @@ async function recomputeKpi(client, {
     [indicatorId, timePeriodId, districtId]
   );
 
-  if (indicatorCode === 'IND_ANC_1ST_TRIMESTER_PCT') {
+  if (indicatorCode === 'IND002') {
     await client.query(
       `
       WITH nums AS (
@@ -454,7 +454,7 @@ async function recomputeKpi(client, {
     return;
   }
 
-  if (indicatorCode === 'IND_INSTITUTIONAL_DELIVERY_PCT') {
+  if (indicatorCode === 'IND004') {
     await client.query(
       `
       WITH e8 AS (
@@ -492,7 +492,7 @@ async function recomputeKpi(client, {
     return;
   }
 
-  if (indicatorCode === 'IND_ANC_4PLUS_PCT') {
+  if (indicatorCode === 'IND003') {
     await client.query(
       `
       WITH a AS (
@@ -557,7 +557,7 @@ async function recomputeKpi(client, {
     return;
   }
 
-  if (indicatorCode === 'IND_CHC_FRU_CSECTION_PCT') {
+  if (indicatorCode === 'IND001') {
     await client.query(
       `
       WITH fru AS (
@@ -632,7 +632,7 @@ async function processUpload({
     );
     const periodLabel = tp.label;
     const { rows: indRows } = await client.query(
-      `SELECT id, code FROM indicator WHERE code = $1`,
+      `SELECT id, code FROM indicator WHERE code = $1 LIMIT 1`,
       [template.code]
     );
     if (!indRows[0]) {

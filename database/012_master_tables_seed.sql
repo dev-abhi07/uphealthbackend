@@ -7,15 +7,29 @@
 -- Roles
 -- -----------------------------------------------------------------------------
 INSERT INTO role (code, name) VALUES
-  ('state_admin', 'State Admin'),
-  ('division_viewer', 'Division Viewer'),
-  ('district_viewer', 'District Viewer'),
-  ('district_uploader', 'District (DH) Uploader'),
-  ('district_approver', 'District Approver'),
-  ('block_viewer', 'Block Viewer'),
-  ('block_uploader', 'Block Uploader'),
-  ('facility_uploader', 'Facility Uploader')
-ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name;
+  ('system_admin', 'System Admin'),
+  ('state_admin', 'State'),
+  ('division_viewer', 'Division'),
+  ('district_viewer', 'District'),
+  ('block_viewer', 'Block')
+ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, is_active = TRUE;
+
+-- Legacy uploader/approver roles — not used (data comes from outcome API)
+UPDATE role
+SET is_active = FALSE,
+    name = CASE code
+      WHEN 'district_uploader' THEN 'District Uploader (deprecated)'
+      WHEN 'district_approver' THEN 'District Approver (deprecated)'
+      WHEN 'block_uploader' THEN 'Block Uploader (deprecated)'
+      WHEN 'facility_uploader' THEN 'Facility Uploader (deprecated)'
+      ELSE name
+    END
+WHERE code IN (
+  'district_uploader',
+  'district_approver',
+  'block_uploader',
+  'facility_uploader'
+);
 
 -- -----------------------------------------------------------------------------
 -- 21 source systems
@@ -130,39 +144,39 @@ INSERT INTO indicator
   (sno, code, name, domain, indicator_type, ranking_level, formula_text, unit, is_negative, period_type, primary_source_id)
 SELECT v.sno, v.code, v.name, v.domain, v.indicator_type, v.ranking_level, v.formula_text, v.unit, v.is_negative, v.period_type, s.id
 FROM (VALUES
-  (1, 'IND_CHC_FRU_CSECTION_PCT',
+  (1, 'IND001',
    '% of CHC-FRUs conducted >=10 C-section per month against designated CHC-FRUs',
    'delivery_care', 'quality', 'district',
    'CHC-FRUs with >=10 C-sections / designated CHC-FRUs * 100', 'percent', FALSE, 'monthly', 'hmis'),
-  (2, 'IND_ANC_1ST_TRIMESTER_PCT',
+  (2, 'IND002',
    '% of PW registered for ANC within the first trimester against total PW registered for ANC',
    'ante_natal', 'coverage', 'both',
    'E4 / E5 * 100', 'percent', FALSE, 'monthly', 'ekavach'),
-  (3, 'IND_ANC_4PLUS_PCT',
+  (3, 'IND003',
    '% of PW receiving 4 or more antenatal care check-ups against total PW registered for ANC',
    'ante_natal', 'coverage', 'both',
    'E6 / E7 * 100', 'percent', FALSE, 'monthly', 'ekavach'),
-  (4, 'IND_INSTITUTIONAL_DELIVERY_PCT',
+  (4, 'IND004',
    'Percentage of pregnant women delivered in institution against estimated delivery',
    'delivery_care', 'coverage', 'both',
    '(E8 + E9) / E10 * 100', 'percent', FALSE, 'monthly', 'mantra'),
-  (5, 'IND_NORMAL_DEL_STAY48_PCT',
+  (5, 'IND005',
    '% of facilities where average duration of stay is more than 48 hours for normal delivery',
    'delivery_care', 'quality', 'both',
    'facilities_stay_ge_48 / facilities_with_normal_delivery * 100', 'percent', FALSE, 'monthly', 'mantra'),
-  (6, 'IND_HRP_MANAGED_PCT',
+  (6, 'IND006',
    '% of HRP managed against identified',
    'ante_natal', 'quality', 'both',
    '(v17+v25+v28+v36) / (v16+v24+v27+v35) * 100', 'percent', FALSE, 'monthly', 'hmis'),
-  (7, 'IND_VHND_PCT',
+  (7, 'IND007',
    '% of U/VHND sessions conducted against planned in the last month',
    'ante_natal', 'coverage', 'both',
    'E22 / E23 * 100', 'percent', FALSE, 'monthly', 'ekavach'),
-  (8, 'IND_BIRTH_REG_PCT',
+  (8, 'IND008',
    '% of births registered against estimated live births (cumulative)',
    'delivery_care', 'coverage', 'district',
    'E24 / E25 * 100', 'percent', FALSE, 'cumulative', 'crs'),
-  (9, 'IND_ANM_LOGIN_PCT',
+  (9, 'IND009',
    '% of ANMs who logged into eKavach in the last 30 days, against total active ANMs',
    'data_quality', 'data_quality', 'district',
    'E26 / E27 * 100', 'percent', FALSE, 'rolling_30d', 'ekavach')
@@ -190,30 +204,30 @@ INSERT INTO indicator_level (indicator_id, level)
 SELECT i.id, lvl.level
 FROM indicator i
 JOIN (VALUES
-  ('IND_CHC_FRU_CSECTION_PCT', 'division'),
-  ('IND_CHC_FRU_CSECTION_PCT', 'district'),
-  ('IND_ANC_1ST_TRIMESTER_PCT', 'division'),
-  ('IND_ANC_1ST_TRIMESTER_PCT', 'district'),
-  ('IND_ANC_1ST_TRIMESTER_PCT', 'block'),
-  ('IND_ANC_4PLUS_PCT', 'division'),
-  ('IND_ANC_4PLUS_PCT', 'district'),
-  ('IND_ANC_4PLUS_PCT', 'block'),
-  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'division'),
-  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'district'),
-  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'block'),
-  ('IND_NORMAL_DEL_STAY48_PCT', 'division'),
-  ('IND_NORMAL_DEL_STAY48_PCT', 'district'),
-  ('IND_NORMAL_DEL_STAY48_PCT', 'block'),
-  ('IND_HRP_MANAGED_PCT', 'division'),
-  ('IND_HRP_MANAGED_PCT', 'district'),
-  ('IND_HRP_MANAGED_PCT', 'block'),
-  ('IND_VHND_PCT', 'division'),
-  ('IND_VHND_PCT', 'district'),
-  ('IND_VHND_PCT', 'block'),
-  ('IND_BIRTH_REG_PCT', 'division'),
-  ('IND_BIRTH_REG_PCT', 'district'),
-  ('IND_ANM_LOGIN_PCT', 'division'),
-  ('IND_ANM_LOGIN_PCT', 'district')
+  ('IND001', 'division'),
+  ('IND001', 'district'),
+  ('IND002', 'division'),
+  ('IND002', 'district'),
+  ('IND002', 'block'),
+  ('IND003', 'division'),
+  ('IND003', 'district'),
+  ('IND003', 'block'),
+  ('IND004', 'division'),
+  ('IND004', 'district'),
+  ('IND004', 'block'),
+  ('IND005', 'division'),
+  ('IND005', 'district'),
+  ('IND005', 'block'),
+  ('IND006', 'division'),
+  ('IND006', 'district'),
+  ('IND006', 'block'),
+  ('IND007', 'division'),
+  ('IND007', 'district'),
+  ('IND007', 'block'),
+  ('IND008', 'division'),
+  ('IND008', 'district'),
+  ('IND009', 'division'),
+  ('IND009', 'district')
 ) AS lvl(ind_code, level) ON lvl.ind_code = i.code
 ON CONFLICT DO NOTHING;
 
@@ -223,31 +237,31 @@ ON CONFLICT DO NOTHING;
 INSERT INTO indicator_component (indicator_id, data_element_id, role, sort_order, expression_note)
 SELECT i.id, d.id, c.role, c.sort_order, c.expression_note
 FROM (VALUES
-  ('IND_CHC_FRU_CSECTION_PCT', 'DE_V65_CSECTION', 'numerator_part', 1, 'Count CHC-FRUs with >=10 C-sections from v65'),
-  ('IND_CHC_FRU_CSECTION_PCT', 'DE_UPKSK_FRU_D', 'denominator', 2, 'Designated CHC-FRU count'),
-  ('IND_ANC_1ST_TRIMESTER_PCT', 'E4', 'numerator', 1, NULL),
-  ('IND_ANC_1ST_TRIMESTER_PCT', 'E5', 'denominator', 2, NULL),
-  ('IND_ANC_4PLUS_PCT', 'E6', 'numerator', 1, NULL),
-  ('IND_ANC_4PLUS_PCT', 'E7', 'denominator', 2, NULL),
-  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'E8', 'numerator_part', 1, 'Public (Mantra)'),
-  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'E9', 'numerator_part', 2, 'Private (HMIS)'),
-  ('IND_INSTITUTIONAL_DELIVERY_PCT', 'E10', 'denominator', 3, 'DGFW estimated delivery'),
-  ('IND_NORMAL_DEL_STAY48_PCT', 'DE_MANTRA_STAY48_FAC', 'numerator', 1, NULL),
-  ('IND_NORMAL_DEL_STAY48_PCT', 'DE_MANTRA_NORMAL_DEL_FAC', 'denominator', 2, NULL),
-  ('IND_HRP_MANAGED_PCT', 'DE_V17_HTN_MANAGED', 'numerator_part', 1, 'managed sum'),
-  ('IND_HRP_MANAGED_PCT', 'DE_V25_ANAEMIA_TREATED', 'numerator_part', 2, 'managed sum'),
-  ('IND_HRP_MANAGED_PCT', 'DE_V28_GDM_MANAGED', 'numerator_part', 3, 'managed sum'),
-  ('IND_HRP_MANAGED_PCT', 'DE_V36_THYROID_TREATED', 'numerator_part', 4, 'managed sum'),
-  ('IND_HRP_MANAGED_PCT', 'DE_V16_HTN_DETECTED', 'denominator_part', 5, 'identified sum'),
-  ('IND_HRP_MANAGED_PCT', 'DE_V24_HB_LE7', 'denominator_part', 6, 'identified sum'),
-  ('IND_HRP_MANAGED_PCT', 'DE_V27_GDM_POS', 'denominator_part', 7, 'identified sum'),
-  ('IND_HRP_MANAGED_PCT', 'DE_V35_THYROID_POS', 'denominator_part', 8, 'identified sum'),
-  ('IND_VHND_PCT', 'E22', 'numerator', 1, NULL),
-  ('IND_VHND_PCT', 'E23', 'denominator', 2, 'Population / planned base'),
-  ('IND_BIRTH_REG_PCT', 'E24', 'numerator', 1, NULL),
-  ('IND_BIRTH_REG_PCT', 'E25', 'denominator', 2, 'Sum blocks to district'),
-  ('IND_ANM_LOGIN_PCT', 'E26', 'numerator', 1, NULL),
-  ('IND_ANM_LOGIN_PCT', 'E27', 'denominator', 2, NULL)
+  ('IND001', 'DE_V65_CSECTION', 'numerator_part', 1, 'Count CHC-FRUs with >=10 C-sections from v65'),
+  ('IND001', 'DE_UPKSK_FRU_D', 'denominator', 2, 'Designated CHC-FRU count'),
+  ('IND002', 'E4', 'numerator', 1, NULL),
+  ('IND002', 'E5', 'denominator', 2, NULL),
+  ('IND003', 'E6', 'numerator', 1, NULL),
+  ('IND003', 'E7', 'denominator', 2, NULL),
+  ('IND004', 'E8', 'numerator_part', 1, 'Public (Mantra)'),
+  ('IND004', 'E9', 'numerator_part', 2, 'Private (HMIS)'),
+  ('IND004', 'E10', 'denominator', 3, 'DGFW estimated delivery'),
+  ('IND005', 'DE_MANTRA_STAY48_FAC', 'numerator', 1, NULL),
+  ('IND005', 'DE_MANTRA_NORMAL_DEL_FAC', 'denominator', 2, NULL),
+  ('IND006', 'DE_V17_HTN_MANAGED', 'numerator_part', 1, 'managed sum'),
+  ('IND006', 'DE_V25_ANAEMIA_TREATED', 'numerator_part', 2, 'managed sum'),
+  ('IND006', 'DE_V28_GDM_MANAGED', 'numerator_part', 3, 'managed sum'),
+  ('IND006', 'DE_V36_THYROID_TREATED', 'numerator_part', 4, 'managed sum'),
+  ('IND006', 'DE_V16_HTN_DETECTED', 'denominator_part', 5, 'identified sum'),
+  ('IND006', 'DE_V24_HB_LE7', 'denominator_part', 6, 'identified sum'),
+  ('IND006', 'DE_V27_GDM_POS', 'denominator_part', 7, 'identified sum'),
+  ('IND006', 'DE_V35_THYROID_POS', 'denominator_part', 8, 'identified sum'),
+  ('IND007', 'E22', 'numerator', 1, NULL),
+  ('IND007', 'E23', 'denominator', 2, 'Population / planned base'),
+  ('IND008', 'E24', 'numerator', 1, NULL),
+  ('IND008', 'E25', 'denominator', 2, 'Sum blocks to district'),
+  ('IND009', 'E26', 'numerator', 1, NULL),
+  ('IND009', 'E27', 'denominator', 2, NULL)
 ) AS c(ind_code, de_code, role, sort_order, expression_note)
 JOIN indicator i ON i.code = c.ind_code
 JOIN data_element d ON d.code = c.de_code

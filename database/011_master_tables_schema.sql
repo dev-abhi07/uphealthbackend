@@ -72,11 +72,16 @@ CREATE TABLE IF NOT EXISTS indicator (
   sno                 INT,
   code                VARCHAR(50) NOT NULL,
   name                TEXT NOT NULL,
+  short_name          TEXT,
   domain              VARCHAR(50),
+  domain_label        VARCHAR(120),
   indicator_type      VARCHAR(30),
   ranking_level       VARCHAR(20) NOT NULL
                         CHECK (ranking_level IN ('division', 'district', 'block', 'both', 'facility')),
   formula_text        TEXT,
+  numerator_text      TEXT,
+  denominator_text    TEXT,
+  data_source_text    TEXT,
   unit                VARCHAR(20) NOT NULL DEFAULT 'percent',
   is_negative         BOOLEAN NOT NULL DEFAULT FALSE,
   weight              NUMERIC(8,4),
@@ -94,10 +99,15 @@ CREATE INDEX IF NOT EXISTS idx_indicator_type ON indicator (indicator_type);
 CREATE INDEX IF NOT EXISTS idx_indicator_ranking ON indicator (ranking_level);
 CREATE INDEX IF NOT EXISTS idx_indicator_sno ON indicator (sno);
 
-COMMENT ON TABLE indicator IS 'Master: KPI definitions for dashboard (BY INDICATORS / TYPE / DOMAIN)';
+COMMENT ON TABLE indicator IS 'Master: KPI definitions (codes IND001–IND037)';
+COMMENT ON COLUMN indicator.code IS 'Canonical API code IND001–IND037';
 COMMENT ON COLUMN indicator.domain IS 'e.g. ante_natal, delivery_care — BY DOMAIN tab';
+COMMENT ON COLUMN indicator.domain_label IS 'Display domain from Ind_definition (e.g. Maternal Health)';
 COMMENT ON COLUMN indicator.indicator_type IS 'coverage | quality | data_quality — BY TYPE tab';
 COMMENT ON COLUMN indicator.ranking_level IS 'Client calculation/ranking level: district | both | block';
+COMMENT ON COLUMN indicator.numerator_text IS 'Definition numerator text';
+COMMENT ON COLUMN indicator.denominator_text IS 'Definition denominator text';
+COMMENT ON COLUMN indicator.data_source_text IS 'Human-readable data source label(s)';
 COMMENT ON COLUMN indicator.weight IS 'Weight for overall composite score';
 
 -- -----------------------------------------------------------------------------

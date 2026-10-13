@@ -11,22 +11,44 @@ const uploadService = require('../services/uploadService');
 const { query } = require('../db/pool');
 const { asyncHandler } = require('../middleware/errorHandler');
 
-/** Step 1: list indicators (state workflow) */
+/** Step 1: list indicators (state workflow) — codes are IND001–IND037 */
 async function listIndicators(req, res) {
   const templates = listTemplates();
+  let byCode = new Map();
+  try {
+    const { listMasterIndicators } = require('../indicators/indicatorService');
+    const master = await listMasterIndicators({ activeOnly: true });
+    for (const m of master) {
+      byCode.set(String(m.code).toUpperCase(), m);
+    }
+  } catch (_) {
+    /* DB optional for template-only response */
+  }
+
   res.json({
     success: true,
     audience: 'state_admin',
     count: templates.length,
-    indicators: templates.map((t) => ({
-      code: t.code,
-      name: t.name,
-      default_level: t.default_level,
-      allowed_levels: t.allowed_levels,
-      data_sources: t.data_sources,
-      sources: t.sources,
-      data_source_label: t.data_source_label,
-    })),
+    indicators: templates.map((t) => {
+      const m = byCode.get(String(t.code).toUpperCase());
+      return {
+        code: t.code,
+        name: (m && m.name) || t.name,
+        domain: (m && m.domain) || null,
+        domain_label: (m && m.domain_label) || null,
+        numerator: (m && m.numerator) || null,
+        denominator: (m && m.denominator) || null,
+        data_source: (m && m.data_source) || t.data_source_label || null,
+        ranking_level: (m && m.ranking_level) || null,
+        unit: (m && m.unit) || null,
+        is_negative: m ? !!m.is_negative : false,
+        default_level: t.default_level,
+        allowed_levels: t.allowed_levels,
+        data_sources: t.data_sources,
+        sources: t.sources,
+        data_source_label: t.data_source_label,
+      };
+    }),
   });
 }
 
@@ -37,7 +59,12 @@ async function listSources(req, res) {
   if (!sources) {
     return res.status(404).json({ success: false, message: `Unknown indicator: ${code}` });
   }
-  res.json({ success: true, indicator_code: code, sources });
+  const template = getTemplate(code);
+  res.json({
+    success: true,
+    indicator_code: template ? template.code : code,
+    sources,
+  });
 }
 
 /** Step 3: levels for indicator (+ optional source) */

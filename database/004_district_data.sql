@@ -23,7 +23,7 @@ INSERT INTO district (division_id, lgd_code, name) VALUES
   (8, '131', 'Basti'),
   (14, '179', 'Bhadohi'),
   (15, '132', 'Bijnor'),
-  (7, '133', 'Badaun'),
+  (7, '133', 'Budaun'),
   (4, '134', 'Bulandshahar'),
   (17, '135', 'Chandauli'),
   (9, '136', 'Chitrakoot'),

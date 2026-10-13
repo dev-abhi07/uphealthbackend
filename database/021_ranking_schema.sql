@@ -9,7 +9,13 @@ CREATE TABLE IF NOT EXISTS ranking_indicator (
   unit          VARCHAR(20) NOT NULL DEFAULT 'percent',
   sort_order    INT NOT NULL DEFAULT 100,
   is_composite  BOOLEAN NOT NULL DEFAULT FALSE,
-  is_active     BOOLEAN NOT NULL DEFAULT TRUE
+  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+  master_indicator_id BIGINT REFERENCES indicator(id),
+  numerator_text TEXT,
+  denominator_text TEXT,
+  data_source_text TEXT,
+  domain_label  VARCHAR(120),
+  is_negative   BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS ranking_period (

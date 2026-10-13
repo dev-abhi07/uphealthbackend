@@ -1,8 +1,16 @@
 /**
  * Executive Summary bottom sections: Insights, Rank Movement, Indicator matrix.
+ * Division mode → district content; district mode → block content.
+ * Scoped logins filter to their division districts / district blocks (response shape unchanged).
+ * Data from indicator_outcome_*.
  */
 const { query } = require('../db/pool');
-const { LOWER_IS_BETTER } = require('./rankingExecutiveSummaryService');
+const {
+  resolveOutcomePeriod,
+  loadCompositeByPeriod: loadOutcomeComposite,
+  loadIndicatorByPeriod,
+} = require('../outcome/outcomeRankingQueries');
+const { normalizeName } = require('../services/geoScopeService');
 
 function num(v) {
   if (v === null || v === undefined) return null;
@@ -24,6 +32,56 @@ function shortGeoName(name) {
 
 function geoKey(name) {
   return shortGeoName(name).toLowerCase().replace(/\s+/g, '-');
+}
+
+/** Stable identity for rank-movement links (LGD / id — never bare name alone). */
+function entityKey(row, geoLevel) {
+  const level = String(geoLevel || '').toLowerCase();
+  if (level === 'block' && row.block_lgd != null && row.block_lgd !== '') {
+    return `b-${row.block_lgd}`;
+  }
+  if (level === 'district' && row.district_lgd != null && row.district_lgd !== '') {
+    return `d-${row.district_lgd}`;
+  }
+  if (level === 'division') {
+    if (row.division_id != null && row.division_id !== '') {
+      return `v-${row.division_id}`;
+    }
+    if (row.division_code != null && row.division_code !== '') {
+      return `v-${row.division_code}`;
+    }
+  }
+  // Fallback: name + district so two "Rajpura" blocks in theory stay distinct
+  const dist = row.district_lgd != null ? String(row.district_lgd) : '';
+  return `n-${geoKey(row.name)}${dist ? `@${dist}` : ''}`;
+}
+
+/**
+ * One row per entity per period (outcome sync can emit duplicate block names/LGDs).
+ * Keeps the better statewide rank, then higher composite.
+ */
+function dedupeCompositeRows(rows, geoLevel) {
+  if (!Array.isArray(rows) || !rows.length) return [];
+  const best = new Map();
+  for (const r of rows) {
+    const key = `${r.period || ''}::${entityKey(r, geoLevel)}`;
+    const prev = best.get(key);
+    if (!prev) {
+      best.set(key, r);
+      continue;
+    }
+    const prevRank = prev.rank != null ? Number(prev.rank) : 99999;
+    const nextRank = r.rank != null ? Number(r.rank) : 99999;
+    if (nextRank < prevRank) {
+      best.set(key, r);
+    } else if (
+      nextRank === prevRank &&
+      Number(r.value ?? -Infinity) > Number(prev.value ?? -Infinity)
+    ) {
+      best.set(key, r);
+    }
+  }
+  return [...best.values()];
 }
 
 function displayPeriod(label) {
@@ -72,63 +130,65 @@ function rankTierColor(rank, total = 18) {
 }
 
 async function resolvePeriod(period) {
-  if (period) {
-    const { rows } = await query(
-      `SELECT * FROM ranking_period WHERE label = $1 OR display ILIKE $1 LIMIT 1`,
-      [period]
-    );
-    return rows[0] || null;
-  }
-  const { rows } = await query(
-    `
-    SELECT p.* FROM ranking_period p
-    JOIN ranking_value v ON v.period_id = p.id
-    WHERE v.geo_level = 'division'
-    GROUP BY p.id
-    ORDER BY p.label DESC
-    LIMIT 1
-    `
-  );
-  return rows[0] || null;
+  return resolveOutcomePeriod(period);
 }
 
 async function loadCompositeByPeriod(geoLevel, periodLabels) {
-  if (!periodLabels.length) return [];
-  const { rows } = await query(
-    `
-    SELECT p.label AS period, v.geo_name, v.value::float AS value, v.rank
-    FROM ranking_value v
-    JOIN ranking_indicator i ON i.id = v.indicator_id
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE i.code = 'RANK_COMPOSITE'
-      AND v.geo_level = $1
-      AND p.label = ANY($2::text[])
-    `,
-    [geoLevel, periodLabels]
-  );
+  const rows = await loadOutcomeComposite(geoLevel, periodLabels);
   return rows.map((r) => ({
     period: r.period,
-    name: r.geo_name,
-    value: num(r.value),
-    rank: r.rank != null ? Number(r.rank) : null,
+    name: r.name,
+    value: r.value,
+    rank: r.rank,
+    block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+    district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+    division_id: r.division_id != null ? Number(r.division_id) : null,
+    division_code: r.division_code != null ? String(r.division_code) : null,
+    district_name: r.district_name || null,
   }));
 }
 
-function buildRankColumn(rows, period, total) {
+function buildRankColumn(rows, period, total, geoLevel) {
   const filtered = rows.filter((r) => r.period === period);
   const sorted = [...filtered].sort((a, b) => {
     if (a.rank != null && b.rank != null) return a.rank - b.rank;
     return (b.value ?? 0) - (a.value ?? 0);
   });
-  return sorted.map((r, idx) => {
-    const rank = r.rank ?? idx + 1;
+  const mapped = sorted.map((r, idx) => {
+    const stateRank = r.rank ?? idx + 1;
+    const rank = idx + 1; // dense 1..n within this column (chart / scoped list)
     return {
-      areaId: geoKey(r.name),
+      areaId: entityKey(r, geoLevel),
       areaName: shortGeoName(r.name),
       rank,
+      state_rank: stateRank,
       score: round(r.value, 2),
       color: rankTierColor(rank, total),
+      district_name: r.district_name || null,
+      block_lgd: r.block_lgd,
+      district_lgd: r.district_lgd,
     };
+  });
+
+  // Same display name, different LGD → keep both, label distinctly
+  const nameCounts = new Map();
+  for (const m of mapped) {
+    const n = String(m.areaName || '').toLowerCase();
+    nameCounts.set(n, (nameCounts.get(n) || 0) + 1);
+  }
+  const nameSeen = new Map();
+  return mapped.map((m) => {
+    const n = String(m.areaName || '').toLowerCase();
+    if ((nameCounts.get(n) || 0) <= 1) return m;
+    const i = (nameSeen.get(n) || 0) + 1;
+    nameSeen.set(n, i);
+    const tag =
+      m.block_lgd != null
+        ? String(m.block_lgd)
+        : m.district_lgd != null
+          ? String(m.district_lgd)
+          : String(i);
+    return { ...m, areaName: `${m.areaName} (${tag})` };
   });
 }
 
@@ -192,41 +252,52 @@ function buildRankInsights(columns, periodKeys, levelLabel) {
 async function loadIndicatorMoM(geoLevel, currentLabel, prevLabel) {
   if (!currentLabel) return [];
   const labels = prevLabel ? [currentLabel, prevLabel] : [currentLabel];
-  const { rows } = await query(
+  const { rows: inds } = await query(
     `
-    SELECT p.label AS period, v.geo_name, i.code, i.short_name, i.name, i.unit,
-           v.value::float AS value
-    FROM ranking_value v
-    JOIN ranking_indicator i ON i.id = v.indicator_id
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE v.geo_level = $1
-      AND p.label = ANY($2::text[])
-      AND i.is_active = TRUE
-      AND i.is_composite = FALSE
-      AND i.code <> 'RANK_ASHA_EXP'
-    `,
-    [geoLevel, labels]
+    SELECT code, short_name, name, unit, is_negative, sno
+    FROM indicator
+    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
+    ORDER BY sno NULLS LAST, code
+    `
   );
 
   const byKey = new Map();
-  rows.forEach((r) => {
-    const key = `${geoKey(r.geo_name)}::${r.code}`;
-    if (!byKey.has(key)) {
-      byKey.set(key, {
-        areaId: geoKey(r.geo_name),
-        areaName: shortGeoName(r.geo_name),
-        code: r.code,
-        indicatorName: (r.short_name || r.name || r.code).toUpperCase(),
-        lowerIsBetter: LOWER_IS_BETTER.has(r.code),
-        current: null,
-        previous: null,
-      });
+  for (const ind of inds) {
+    const code = String(ind.code || '').toUpperCase();
+    const lowerIsBetter =
+      !!ind.is_negative || code === 'IND010' || code === 'IND011';
+    const rows = await loadIndicatorByPeriod({
+      geoLevel,
+      indicatorCode: ind.code,
+      periodLabels: labels,
+      isNegative: lowerIsBetter,
+    });
+    for (const r of rows) {
+      const idPart =
+        r.block_lgd != null
+          ? `b-${r.block_lgd}`
+          : r.district_lgd != null
+            ? `d-${r.district_lgd}`
+            : geoKey(r.name);
+      const key = `${idPart}::${ind.code}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, {
+          areaId: idPart,
+          areaName: shortGeoName(r.name),
+          code: ind.code,
+          indicatorName: (ind.short_name || ind.name || ind.code).toUpperCase(),
+          lowerIsBetter,
+          district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+          district_name: r.district_name || null,
+          current: null,
+          previous: null,
+        });
+      }
+      const row = byKey.get(key);
+      if (r.period === currentLabel) row.current = r.value;
+      if (r.period === prevLabel) row.previous = r.value;
     }
-    const row = byKey.get(key);
-    const val = num(r.value);
-    if (r.period === currentLabel) row.current = val;
-    if (r.period === prevLabel) row.previous = val;
-  });
+  }
 
   return [...byKey.values()].filter((r) => r.current != null && r.previous != null);
 }
@@ -240,6 +311,14 @@ function pctChange(current, previous) {
   return round(((current - previous) / Math.abs(previous)) * 100, 1);
 }
 
+function resolveTrend(delta, { lowerIsBetter = false, flatEps = 0.005 } = {}) {
+  if (delta == null || Number.isNaN(Number(delta))) return 'flat';
+  const d = Number(delta);
+  if (Math.abs(d) <= flatEps) return 'flat';
+  const improved = lowerIsBetter ? d < 0 : d > 0;
+  return improved ? 'up' : 'down';
+}
+
 function buildIndicatorInsights(rows, levelLabel) {
   let bestIncrease = null;
   let bestDecrease = null;
@@ -248,26 +327,35 @@ function buildIndicatorInsights(rows, levelLabel) {
     const change = row.current - row.previous;
     const pct = pctChange(row.current, row.previous);
     if (pct == null) return;
+    const lowerIsBetter = !!row.lowerIsBetter;
+    // Semantic: 'up' = improved (green), 'down' = worsened (red)
+    const trend = resolveTrend(change, { lowerIsBetter, flatEps: 0 });
 
     const increaseCandidate = {
       areaId: row.areaId,
       areaName: row.areaName,
+      code: row.code || null,
       indicatorName: row.indicatorName,
       value: round(row.current, 2),
       pctChange: pct,
       title: 'Highest increase in indicator from last month',
       levelLabel,
-      lowerIsBetter: row.lowerIsBetter,
+      lowerIsBetter,
+      lower_is_better: lowerIsBetter,
+      trend,
     };
     const decreaseCandidate = {
       areaId: row.areaId,
       areaName: row.areaName,
+      code: row.code || null,
       indicatorName: row.indicatorName,
       value: round(row.current, 2),
       pctChange: pct,
       title: 'Maximum decrease in indicator from last month',
       levelLabel,
-      lowerIsBetter: row.lowerIsBetter,
+      lowerIsBetter,
+      lower_is_better: lowerIsBetter,
+      trend,
     };
 
     if (!bestIncrease || pct > bestIncrease.pctChange) {
@@ -291,73 +379,202 @@ function matrixKind(unit) {
   return 'ratio';
 }
 
+/** Indicators: |value| < 10 keep decimals; 10+ whole number. */
+function formatIndicatorNumber(n) {
+  if (Math.abs(n) < 10) return Number(n.toFixed(2)).toString();
+  return String(Math.round(n));
+}
+
 function formatMatrixDisplay(kind, value) {
   if (value == null || Number.isNaN(Number(value))) return '—';
   const n = Number(value);
   if (kind === 'rank') return String(Math.round(n));
   if (kind === 'percent') {
     const pct = n <= 1 ? n * 100 : n;
-    if (Math.abs(pct - Math.round(pct)) < 0.005) return `${Math.round(pct)}%`;
-    return `${pct.toFixed(2)}%`;
+    return `${formatIndicatorNumber(pct)}%`;
   }
-  if (kind === 'number') return n % 1 === 0 ? String(n) : n.toFixed(2);
-  return n % 1 === 0 ? String(n) : n.toFixed(2);
+  return formatIndicatorNumber(n);
 }
 
-function resolveTrend(delta, { lowerIsBetter = false, flatEps = 0.005 } = {}) {
-  if (delta == null || Number.isNaN(Number(delta))) return 'flat';
-  const d = Number(delta);
-  if (Math.abs(d) <= flatEps) return 'flat';
-  const improved = lowerIsBetter ? d < 0 : d > 0;
-  return improved ? 'up' : 'down';
+/** Allowed area names for scoped login; null = statewide (no filter). */
+function allowedAreaNames(scope, contentGeo) {
+  if (!scope || scope.isStateAdmin || scope.unrestricted) return null;
+  if (contentGeo === 'district') {
+    if (scope.level === 'division') {
+      return new Set(
+        (scope.districtNamesInDivision || []).map((n) => normalizeName(n))
+      );
+    }
+    if (scope.level === 'district' || scope.level === 'block') {
+      return new Set([normalizeName(scope.districtName)].filter(Boolean));
+    }
+  }
+  if (contentGeo === 'block') {
+    if (scope.level === 'block') {
+      return new Set([normalizeName(scope.blockName)].filter(Boolean));
+    }
+    if (scope.level === 'district') {
+      // Prefer district_lgd (keeps Urban / synthetic LGDs); name set is fallback.
+      return {
+        type: 'block_in_district',
+        districtLgd:
+          scope.districtLgd != null ? Number(scope.districtLgd) : null,
+        districtName: normalizeName(scope.districtName || ''),
+        blocks: new Set(
+          (scope.blockNamesInDistrict || []).map((n) => normalizeName(n))
+        ),
+      };
+    }
+    if (scope.level === 'division') {
+      // Division login on block content: all blocks under districts in that division
+      const districts = new Set(
+        (scope.districtNamesInDivision || []).map((n) => normalizeName(n))
+      );
+      return { type: 'block_by_district', districts };
+    }
+  }
+  return null;
+}
+
+function nameAllowed(name, allowed) {
+  if (!allowed) return true;
+  if (allowed instanceof Set) return allowed.has(normalizeName(name));
+  return true;
+}
+
+function filterCompositeByScope(rows, scope, contentGeo) {
+  const allowed = allowedAreaNames(scope, contentGeo);
+  if (!allowed) return rows;
+  if (allowed instanceof Set) {
+    return rows.filter((r) => nameAllowed(r.name, allowed));
+  }
+  if (allowed.type === 'block_in_district') {
+    // Strict district scope — never keep foreign blocks via shared names.
+    return rows.filter((r) => {
+      if (
+        allowed.districtLgd != null &&
+        r.district_lgd != null &&
+        Number(r.district_lgd) === allowed.districtLgd
+      ) {
+        return true;
+      }
+      if (
+        allowed.districtName &&
+        normalizeName(r.district_name || '') === allowed.districtName
+      ) {
+        return true;
+      }
+      return false;
+    });
+  }
+  if (allowed.type === 'block_by_district') {
+    return rows.filter((r) =>
+      allowed.districts.has(normalizeName(r.district_name || ''))
+    );
+  }
+  return rows;
+}
+
+function filterIndicatorRowsByScope(rows, scope, contentGeo) {
+  const allowed = allowedAreaNames(scope, contentGeo);
+  if (!allowed) return rows;
+  if (allowed instanceof Set) {
+    return rows.filter((r) => nameAllowed(r.areaName, allowed));
+  }
+  if (allowed.type === 'block_in_district') {
+    return rows.filter((r) => {
+      if (
+        allowed.districtLgd != null &&
+        r.district_lgd != null &&
+        Number(r.district_lgd) === allowed.districtLgd
+      ) {
+        return true;
+      }
+      if (
+        allowed.districtName &&
+        normalizeName(r.district_name || '') === allowed.districtName
+      ) {
+        return true;
+      }
+      return false;
+    });
+  }
+  if (allowed.type === 'block_by_district') {
+    return rows.filter((r) =>
+      allowed.districts.has(normalizeName(r.district_name || ''))
+    );
+  }
+  return rows;
 }
 
 /**
- * Insights + 3-month rank movement (division level for Sankey chart).
+ * Insights + 3-month rank movement.
+ * State/sysadmin: division → divisions; district → districts.
+ * Division login → districts; district login → blocks.
  */
-async function getRankInsights({ period, mode = 'division' } = {}) {
-  const geoLevel = mode === 'district' ? 'district' : 'division';
-  const levelLabel = geoLevel === 'division' ? 'Division' : 'District';
+async function getRankInsights({ period, mode = 'division', scope = null } = {}) {
+  const viewMode = mode === 'district' ? 'district' : 'division';
+  const statewide = !scope || scope.isStateAdmin || scope.unrestricted;
+  const contentGeo = statewide
+    ? viewMode === 'district'
+      ? 'district'
+      : 'division'
+    : scope.level === 'division'
+      ? 'district'
+      : 'block';
+  const levelLabel =
+    contentGeo === 'block' ? 'Block' : contentGeo === 'district' ? 'District' : 'Division';
   const periodRow = await resolvePeriod(period);
   if (!periodRow) {
     return {
       has_data: false,
-      message: 'No ranking periods imported yet',
+      message: 'No outcome periods synced yet',
       period: period || null,
-      mode: geoLevel,
+      mode: viewMode,
+      content_geo_level: contentGeo,
     };
   }
 
   const periodKeys = trailingMonths(periodRow.label, 3);
   const prevLabel = prevMonthLabel(periodRow.label);
-  const compositeRows = await loadCompositeByPeriod('division', periodKeys);
-  const total = Math.max(
-    ...periodKeys.map((pl) => compositeRows.filter((r) => r.period === pl).length),
-    1
-  );
-  const columns = periodKeys.map((pl) => buildRankColumn(compositeRows, pl, total));
-  const rankInsights = buildRankInsights(columns, periodKeys, 'Division');
+  let compositeRows = await loadCompositeByPeriod(contentGeo, periodKeys);
+  compositeRows = filterCompositeByScope(compositeRows, scope, contentGeo);
+  // Drop duplicate outcome rows (same block/district LGD twice → double "RAJPURA")
+  compositeRows = dedupeCompositeRows(compositeRows, contentGeo);
 
-  const indicatorRows = await loadIndicatorMoM(
-    geoLevel,
+  const latestCount = compositeRows.filter(
+    (r) => r.period === periodRow.label
+  ).length;
+  const total = Math.max(latestCount, 1);
+  const columns = periodKeys.map((pl) =>
+    buildRankColumn(compositeRows, pl, total, contentGeo)
+  );
+  const colMax = Math.max(...columns.map((c) => c.length), total);
+  const rankInsights = buildRankInsights(columns, periodKeys, levelLabel);
+
+  let indicatorRows = await loadIndicatorMoM(
+    contentGeo,
     periodRow.label,
     prevLabel
   );
+  indicatorRows = filterIndicatorRowsByScope(indicatorRows, scope, contentGeo);
   const indicatorInsights = buildIndicatorInsights(indicatorRows, levelLabel);
 
   return {
     has_data: true,
     period: periodRow.label,
-    mode: geoLevel,
+    mode: viewMode,
+    content_geo_level: contentGeo,
     period_label: displayPeriod(periodRow.label),
     insights: {
       ...rankInsights,
       ...indicatorInsights,
     },
     rank_movement: {
+      geo_level: contentGeo,
       periods: periodKeys,
       period_labels: periodKeys.map(formatPeriodTick),
-      total,
+      total: colMax,
       columns,
     },
   };
@@ -365,48 +582,142 @@ async function getRankInsights({ period, mode = 'division' } = {}) {
 
 async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
   const labels = prevLabel ? [currentLabel, prevLabel] : [currentLabel];
-  const { rows } = await query(
+  const out = [];
+
+  const composite = await loadOutcomeComposite(geoLevel, labels);
+  for (const r of composite) {
+    out.push({
+      period: r.period,
+      geo_name: r.name,
+      district_name: r.district_name || null,
+      district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+      block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+      rank: r.rank,
+      value: r.value,
+      code: 'RANK_COMPOSITE',
+      short_name: 'Overall composite score',
+      name: 'Overall composite score',
+      unit: 'index',
+      sort_order: 0,
+      is_composite: true,
+      is_negative: false,
+    });
+  }
+
+  const { rows: inds } = await query(
     `
-    SELECT p.label AS period, v.geo_name, v.rank, v.value::float AS value,
-           i.code, i.short_name, i.name, i.unit, i.sort_order, i.is_composite
-    FROM ranking_value v
-    JOIN ranking_indicator i ON i.id = v.indicator_id
-    JOIN ranking_period p ON p.id = v.period_id
-    WHERE v.geo_level = $1
-      AND p.label = ANY($2::text[])
-      AND i.is_active = TRUE
-      AND i.code <> 'RANK_ASHA_EXP'
-    ORDER BY i.sort_order, v.geo_name
-    `,
-    [geoLevel, labels]
+    SELECT code, short_name, name, unit, is_negative, sno
+    FROM indicator
+    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
+    ORDER BY sno NULLS LAST, code
+    `
   );
-  return rows;
+  for (const ind of inds) {
+    const code = String(ind.code || '').toUpperCase();
+    const isNegative =
+      !!ind.is_negative || code === 'IND010' || code === 'IND011';
+    const rows = await loadIndicatorByPeriod({
+      geoLevel,
+      indicatorCode: ind.code,
+      periodLabels: labels,
+      isNegative,
+    });
+    for (const r of rows) {
+      out.push({
+        period: r.period,
+        geo_name: r.name,
+        district_name: r.district_name || null,
+        district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+        block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+        rank: r.rank,
+        value: r.value,
+        code: ind.code,
+        short_name: ind.short_name || ind.name,
+        name: ind.name,
+        unit: ind.unit,
+        sort_order: ind.sno != null ? Number(ind.sno) : 999,
+        is_composite: false,
+        is_negative: isNegative,
+      });
+    }
+  }
+  return out;
 }
 
 /**
  * Indicator × area matrix with MoM trend arrows.
+ * State/sysadmin: division → divisions; district → districts.
+ * Division login → districts; district login → blocks.
  */
-async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {}) {
-  const geoLevel = mode === 'division' ? 'division' : 'district';
+async function getIndicatorPerformanceMatrix({
+  period,
+  mode = 'district',
+  scope = null,
+} = {}) {
+  const viewMode = mode === 'division' ? 'division' : 'district';
+  const statewide = !scope || scope.isStateAdmin || scope.unrestricted;
+  const contentGeo = statewide
+    ? viewMode === 'division'
+      ? 'division'
+      : 'district'
+    : scope.level === 'division'
+      ? 'district'
+      : 'block';
   const periodRow = await resolvePeriod(period);
   if (!periodRow) {
     return {
       has_data: false,
-      message: 'No ranking periods imported yet',
+      message: 'No outcome periods synced yet',
       period: period || null,
-      mode: geoLevel,
+      mode: viewMode,
+      content_geo_level: contentGeo,
     };
   }
 
   const prevLabel = prevMonthLabel(periodRow.label);
-  const rows = await loadMatrixData(geoLevel, periodRow.label, prevLabel);
+  let rows = await loadMatrixData(contentGeo, periodRow.label, prevLabel);
+
+  const allowed = allowedAreaNames(scope, contentGeo);
+  if (allowed instanceof Set) {
+    rows = rows.filter((r) => nameAllowed(r.geo_name, allowed));
+  } else if (allowed?.type === 'block_in_district') {
+    // District login: only that district's blocks (was unfiltered → all ~900)
+    rows = rows.filter((r) => {
+      if (
+        allowed.districtLgd != null &&
+        r.district_lgd != null &&
+        Number(r.district_lgd) === allowed.districtLgd
+      ) {
+        return true;
+      }
+      if (
+        allowed.districtName &&
+        normalizeName(r.district_name || '') === allowed.districtName
+      ) {
+        return true;
+      }
+      return false;
+    });
+  } else if (allowed?.type === 'block_by_district') {
+    rows = rows.filter((r) =>
+      allowed.districts.has(normalizeName(r.district_name || ''))
+    );
+  }
+
+  const matrixAreaId = (r) => {
+    if (contentGeo === 'block' && r.block_lgd != null) return `b-${r.block_lgd}`;
+    if (contentGeo === 'district' && r.district_lgd != null) {
+      return `d-${r.district_lgd}`;
+    }
+    return geoKey(r.geo_name);
+  };
 
   const areaMap = new Map();
   const indicatorMap = new Map();
   const valueMap = new Map();
 
   rows.forEach((r) => {
-    const areaId = geoKey(r.geo_name);
+    const areaId = matrixAreaId(r);
     if (!areaMap.has(areaId)) {
       areaMap.set(areaId, {
         id: areaId,
@@ -424,7 +735,7 @@ async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {})
         code: r.code,
         name: (r.short_name || r.name || r.code).toUpperCase(),
         kind,
-        lowerIsBetter: LOWER_IS_BETTER.has(r.code),
+        lowerIsBetter: !!r.is_negative,
         sortOrder: r.sort_order,
       });
     }
@@ -442,21 +753,20 @@ async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {})
     (r) => r.is_composite && r.period === periodRow.label
   );
   rankRows.forEach((r) => {
-    const areaId = geoKey(r.geo_name);
+    const areaId = matrixAreaId(r);
     const key = `${areaId}::RANK_COMPOSITE::${r.period}`;
     valueMap.set(key, { value: num(r.rank ?? r.value), rank: r.rank });
   });
 
   const prevRankKey = (areaId) => `${areaId}::RANK_COMPOSITE::${prevLabel}`;
   rankRows.forEach((r) => {
-    const areaId = geoKey(r.geo_name);
-    const prev = valueMap.get(prevRankKey(areaId));
+    const areaId = matrixAreaId(r);
     if (prevLabel) {
       const prevRow = rows.find(
         (x) =>
           x.is_composite &&
           x.period === prevLabel &&
-          geoKey(x.geo_name) === areaId
+          matrixAreaId(x) === areaId
       );
       if (prevRow) {
         valueMap.set(prevRankKey(areaId), {
@@ -535,7 +845,8 @@ async function getIndicatorPerformanceMatrix({ period, mode = 'district' } = {})
   return {
     has_data: true,
     period: periodRow.label,
-    mode: geoLevel,
+    mode: viewMode,
+    content_geo_level: contentGeo,
     period_label: formatPeriodTick(periodRow.label),
     total_areas: areas.length,
     areas,
