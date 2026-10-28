@@ -14,8 +14,19 @@ function clientMeta(req) {
 }
 
 const login = asyncHandler(async (req, res) => {
-  const { username, password } = req.body || {};
-  const result = await authService.login(username, password);
+  const body = req.body || {};
+  const { username, password } = body;
+  const clientSessionId =
+    body.client_session_id ||
+    body.clientSessionId ||
+    req.headers['x-client-session-id'] ||
+    null;
+  const meta = clientMeta(req);
+  const result = await authService.login(username, password, {
+    clientSessionId,
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+  });
 
   // Record login in user activity log (does not change login response)
   const userId = result.user?.id;
@@ -27,9 +38,11 @@ const login = asyncHandler(async (req, res) => {
         action_name: 'user_login',
         page: '/login',
         page_title: 'Login',
+        session_id: result.session_id || null,
         action_payload: {
           username: result.user.username,
           roles: (result.user.roles || []).map((r) => r.code || r),
+          max_concurrent_sessions: result.max_concurrent_sessions,
         },
       },
       clientMeta(req)
@@ -69,6 +82,24 @@ const changePassword = asyncHandler(async (req, res) => {
 });
 
 const logout = asyncHandler(async (req, res) => {
+  const body = req.body || {};
+  const sid =
+    req.user?.sid ||
+    body.session_id ||
+    body.sessionId ||
+    null;
+  const clientSessionId =
+    body.client_session_id ||
+    body.clientSessionId ||
+    req.headers['x-client-session-id'] ||
+    null;
+
+  if (req.user?.sub && sid) {
+    await authService.revokeSession(req.user.sub, sid);
+  } else if (req.user?.sub && clientSessionId) {
+    await authService.revokeSessionByClientId(req.user.sub, clientSessionId);
+  }
+
   await userLogService.logActivitySafe(
     req.user?.sub,
     {
@@ -76,6 +107,7 @@ const logout = asyncHandler(async (req, res) => {
       action_name: 'user_logout',
       page: '/logout',
       page_title: 'Logout',
+      session_id: sid || clientSessionId || null,
       action_payload: {
         username: req.user?.username || null,
       },

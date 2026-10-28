@@ -36,11 +36,15 @@ GET /api/auth/demo-accounts
 
 | Method | Path | Auth | Body / notes |
 |--------|------|------|----------------|
-| POST | `/api/auth/login` | No | `{ "username", "password" }` |
+| POST | `/api/auth/login` | No | `{ "username", "password", "client_session_id?" }` |
 | GET | `/api/auth/me` | Bearer | Profile + `scope` |
 | POST | `/api/auth/change-password` | Bearer | `{ "current_password", "new_password" }` |
-| POST | `/api/auth/logout` | Bearer | Client discards token |
+| POST | `/api/auth/logout` | Bearer | Revokes this session; client discards token |
 | GET | `/api/auth/demo-accounts` | No | Demo usernames (no passwords) |
+
+### Concurrent sessions
+
+Same userid may keep **N** simultaneous logins (`MAX_CONCURRENT_SESSIONS` in `.env`, default **2**). A new login beyond N revokes the oldest active session (that client then gets 401). Re-login with the same `client_session_id` reuses that slot. JWT includes `sid`; middleware rejects revoked sessions.
 
 ---
 

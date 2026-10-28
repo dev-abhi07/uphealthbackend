@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../db/pool');
@@ -7,6 +8,17 @@ const config = require('../config');
 const STATEWIDE_ROLES = new Set(['state_admin', 'system_admin']);
 /** Only system_admin may manage users from the admin panel. */
 const SYSTEM_ADMIN_ROLES = new Set(['system_admin']);
+
+function newSessionId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function normalizeClientSessionId(raw) {
+  const id = String(raw || '').trim();
+  if (!id) return null;
+  return id.slice(0, 64);
+}
 
 async function findUserByUsername(username) {
   const { rows } = await query(
@@ -167,7 +179,7 @@ function buildUserScope(roles, geoAssignments = []) {
   };
 }
 
-function signToken(user, roles, geo) {
+function signToken(user, roles, geo, sessionId) {
   const scope = buildUserScope(roles, geo);
   const payload = {
     sub: user.id,
@@ -175,6 +187,7 @@ function signToken(user, roles, geo) {
     full_name: user.full_name,
     roles: roles.map((r) => r.code),
     scope_level: scope.level,
+    sid: sessionId,
     geo: geo.map((g) => ({
       geo_level: g.geo_level,
       division_id: g.division_id,
@@ -193,6 +206,119 @@ function signToken(user, roles, geo) {
   });
 }
 
+/**
+ * Create a login session and revoke oldest when over MAX_CONCURRENT_SESSIONS.
+ * Re-login from the same client_session_id reuses that slot (does not double-count).
+ */
+async function createUserSession(userId, { clientSessionId = null, ip = null, userAgent = null } = {}) {
+  const sessionId = newSessionId();
+  const clientId = normalizeClientSessionId(clientSessionId);
+
+  if (clientId) {
+    await query(
+      `
+      UPDATE user_session
+      SET revoked_at = NOW()
+      WHERE user_id = $1
+        AND client_session_id = $2
+        AND revoked_at IS NULL
+      `,
+      [userId, clientId]
+    );
+  }
+
+  await query(
+    `
+    INSERT INTO user_session (
+      user_id, session_id, client_session_id, user_agent, ip_address
+    ) VALUES ($1, $2, $3, $4, $5)
+    `,
+    [userId, sessionId, clientId, userAgent || null, ip || null]
+  );
+
+  const maxSessions = config.maxConcurrentSessions;
+  await query(
+    `
+    WITH ranked AS (
+      SELECT id,
+             ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS rn
+      FROM user_session
+      WHERE user_id = $1 AND revoked_at IS NULL
+    )
+    UPDATE user_session s
+    SET revoked_at = NOW()
+    FROM ranked r
+    WHERE s.id = r.id AND r.rn > $2
+    `,
+    [userId, maxSessions]
+  );
+
+  return sessionId;
+}
+
+/** True when session exists, belongs to user, and is not revoked. */
+async function isSessionActive(userId, sessionId) {
+  const sid = String(sessionId || '').trim();
+  if (!sid || userId == null) return false;
+  const { rows } = await query(
+    `
+    SELECT 1
+    FROM user_session
+    WHERE user_id = $1
+      AND session_id = $2
+      AND revoked_at IS NULL
+    LIMIT 1
+    `,
+    [userId, sid]
+  );
+  return rows.length > 0;
+}
+
+async function touchSession(sessionId) {
+  const sid = String(sessionId || '').trim();
+  if (!sid) return;
+  try {
+    await query(
+      `UPDATE user_session SET last_seen_at = NOW() WHERE session_id = $1 AND revoked_at IS NULL`,
+      [sid]
+    );
+  } catch {
+    // ignore
+  }
+}
+
+async function revokeSession(userId, sessionId) {
+  const sid = String(sessionId || '').trim();
+  if (!sid || userId == null) return false;
+  const { rowCount } = await query(
+    `
+    UPDATE user_session
+    SET revoked_at = NOW()
+    WHERE user_id = $1
+      AND session_id = $2
+      AND revoked_at IS NULL
+    `,
+    [userId, sid]
+  );
+  return rowCount > 0;
+}
+
+async function revokeSessionByClientId(userId, clientSessionId) {
+  const clientId = normalizeClientSessionId(clientSessionId);
+  if (!clientId || userId == null) return false;
+  const { rowCount } = await query(
+    `
+    UPDATE user_session
+    SET revoked_at = NOW()
+    WHERE user_id = $1
+      AND client_session_id = $2
+      AND revoked_at IS NULL
+    `,
+    [userId, clientId]
+  );
+  return rowCount > 0;
+}
+
 function publicUser(user, roles, geo) {
   const scope = buildUserScope(roles, geo);
   return {
@@ -208,7 +334,12 @@ function publicUser(user, roles, geo) {
   };
 }
 
-async function login(username, password) {
+/**
+ * @param {string} username
+ * @param {string} password
+ * @param {{ clientSessionId?: string, ip?: string, userAgent?: string }} [meta]
+ */
+async function login(username, password, meta = {}) {
   if (!username || !password) {
     const err = new Error('Username and password are required');
     err.status = 400;
@@ -231,7 +362,12 @@ async function login(username, password) {
 
   const roles = await getUserRoles(user.id);
   const geo = await getUserGeoAssignments(user.id);
-  const token = signToken(user, roles, geo);
+  const sessionId = await createUserSession(user.id, {
+    clientSessionId: meta.clientSessionId,
+    ip: meta.ip,
+    userAgent: meta.userAgent,
+  });
+  const token = signToken(user, roles, geo, sessionId);
   const publicProfile = publicUser(user, roles, geo);
 
   await query(`UPDATE app_user SET last_login_at = NOW(), updated_at = NOW() WHERE id = $1`, [
@@ -242,6 +378,8 @@ async function login(username, password) {
     token,
     token_type: 'Bearer',
     expires_in: config.jwt.expiresIn,
+    session_id: sessionId,
+    max_concurrent_sessions: config.maxConcurrentSessions,
     user: publicProfile,
     scope: publicProfile.scope,
   };
@@ -356,4 +494,9 @@ module.exports = {
   findUserByUsername,
   buildUserScope,
   listDemoAccounts,
+  isSessionActive,
+  touchSession,
+  revokeSession,
+  revokeSessionByClientId,
+  createUserSession,
 };

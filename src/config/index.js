@@ -14,6 +14,15 @@ module.exports = {
     secret: process.env.JWT_SECRET || 'dev-secret-change-me',
     expiresIn: process.env.JWT_EXPIRES_IN || '8h',
   },
+  /**
+   * How many simultaneous logins the same userid may keep.
+   * Oldest active sessions are revoked when a new login exceeds this.
+   * Override via MAX_CONCURRENT_SESSIONS (default 2).
+   */
+  maxConcurrentSessions: (() => {
+    const n = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 2);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 2;
+  })(),
   outcome: {
     enabled: String(process.env.OUTCOME_API_ENABLED || 'true').toLowerCase() !== 'false',
     districtUrl: process.env.OUTCOME_DISTRICT_API_URL || '',

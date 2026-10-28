@@ -1,8 +1,9 @@
 const jwt = require('jsonwebtoken');
 const config = require('../config');
+const authService = require('../services/authService');
 const { asyncHandler } = require('./errorHandler');
 
-function authenticate(req, res, next) {
+const authenticate = asyncHandler(async (req, res, next) => {
   const header = req.headers.authorization || '';
   const [type, token] = header.split(' ');
 
@@ -13,17 +14,42 @@ function authenticate(req, res, next) {
     });
   }
 
+  let payload;
   try {
-    const payload = jwt.verify(token, config.jwt.secret);
-    req.user = payload;
-    return next();
+    payload = jwt.verify(token, config.jwt.secret);
   } catch (err) {
     return res.status(401).json({
       success: false,
       message: 'Invalid or expired token',
     });
   }
-}
+
+  const sessionId = payload?.sid;
+  if (!sessionId) {
+    return res.status(401).json({
+      success: false,
+      code: 'SESSION_REVOKED',
+      message:
+        'Your session was ended. Please sign in again.',
+    });
+  }
+
+  const active = await authService.isSessionActive(payload.sub, sessionId);
+  if (!active) {
+    return res.status(401).json({
+      success: false,
+      code: 'SESSION_REVOKED',
+      message:
+        'Session revoked. You were logged out because this account signed in from another device or browser (session limit reached). Please sign in again.',
+    });
+  }
+
+  // Fire-and-forget last-seen (do not block the request)
+  authService.touchSession(sessionId);
+
+  req.user = payload;
+  return next();
+});
 
 function authorize(...allowedRoles) {
   return (req, res, next) => {
