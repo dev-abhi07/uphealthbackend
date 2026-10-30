@@ -411,7 +411,7 @@ async function resolveMasterIndicator(code) {
     `
     SELECT i.id, i.sno, i.code, i.name, i.short_name, i.unit, i.domain, i.domain_label,
            i.indicator_type, i.numerator_text, i.denominator_text, i.data_source_text,
-           i.formula_text, i.is_negative, i.weight
+           i.formula_text, i.is_negative, i.weight, i.ranking_level
     FROM indicator i
     WHERE upper(i.code) = $1 AND i.is_active = TRUE
     LIMIT 1
@@ -424,7 +424,7 @@ async function resolveMasterIndicator(code) {
     `
     SELECT i.id, i.sno, i.code, i.name, i.short_name, i.unit, i.domain, i.domain_label,
            i.indicator_type, i.numerator_text, i.denominator_text, i.data_source_text,
-           i.formula_text, i.is_negative, i.weight
+           i.formula_text, i.is_negative, i.weight, i.ranking_level
     FROM ranking_indicator ri
     JOIN indicator i ON i.id = ri.master_indicator_id
     WHERE upper(ri.code) = $1 AND i.is_active = TRUE

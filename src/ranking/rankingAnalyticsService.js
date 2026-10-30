@@ -633,10 +633,27 @@ async function loadIndicatorValues({
   }));
 }
 
-async function loadDistrictPool({ indicatorCode, periodLabels, isNegative = false }) {
+/**
+ * Statewide peer pool for UP AVG / BEST PERF (same contract as Table View breakup):
+ * prefer all districts; if an indicator has no district rows, use all blocks.
+ * Never scoped to the selected division / district / block.
+ */
+async function loadStatewideBenchmarkPool({
+  indicatorCode,
+  periodLabels,
+  isNegative = false,
+}) {
   const code = String(indicatorCode || 'RANK_COMPOSITE').toUpperCase();
   const isComposite = !code || code === 'RANK_COMPOSITE' || code === 'COMPOSITE';
-  const rows = isComposite
+
+  const mapRows = (rows) =>
+    (rows || []).map((r) => ({
+      period: r.period,
+      geo_name: r.name,
+      value: r.value,
+    }));
+
+  const districtRows = isComposite
     ? await loadCompositeByPeriod('district', periodLabels)
     : await loadIndicatorByPeriod({
         geoLevel: 'district',
@@ -644,11 +661,26 @@ async function loadDistrictPool({ indicatorCode, periodLabels, isNegative = fals
         periodLabels,
         isNegative,
       });
-  return rows.map((r) => ({
-    period: r.period,
-    geo_name: r.name,
-    value: r.value,
-  }));
+  const districtPool = mapRows(districtRows);
+  if (districtPool.some((r) => r.value != null)) return districtPool;
+
+  // Block-only indicators: still statewide (every block), not the selected area
+  if (isComposite) {
+    return mapRows(await loadCompositeByPeriod('block', periodLabels));
+  }
+  return mapRows(
+    await loadIndicatorByPeriod({
+      geoLevel: 'block',
+      indicatorCode: code,
+      periodLabels,
+      isNegative,
+    })
+  );
+}
+
+/** @deprecated use loadStatewideBenchmarkPool — kept for callers/tests */
+async function loadDistrictPool(opts) {
+  return loadStatewideBenchmarkPool(opts);
 }
 
 function seriesFromMap(periodKeys, byPeriod, displayFn) {
@@ -847,8 +879,12 @@ async function getAnalyticsDashboard({
     let best_perf_series = null;
     let best_perf_name = null;
 
+    /**
+     * UP AVG + BEST PERF must stay identical when switching division / district /
+     * block (and when picking Moradabad, Agra, …) — same rule as Table View.
+     */
     if (wantUp || wantBest) {
-      const pool = await loadDistrictPool({
+      const pool = await loadStatewideBenchmarkPool({
         indicatorCode: ind.code,
         periodLabels: queryMonths,
         isNegative: !!ind.is_negative,
@@ -856,21 +892,34 @@ async function getAnalyticsDashboard({
       const upMonth = new Map();
       const bestMonth = new Map();
       const bestNameMonth = new Map();
+      const lowerIsBetter = !!ind.is_negative;
       for (const pl of queryMonths) {
         const slice = pool.filter((r) => r.period === pl && r.value != null);
         if (wantUp) upMonth.set(pl, avg(slice.map((r) => r.value)));
         if (wantBest && slice.length) {
-          let best = slice[0];
+          let best = null;
           for (const r of slice) {
-            const better = ind.is_negative ? r.value < best.value : r.value > best.value;
-            if (better) best = r;
+            const v = num(r.value);
+            if (v == null) continue;
+            if (
+              !best ||
+              (lowerIsBetter ? v < best.value : v > best.value)
+            ) {
+              best = { name: r.geo_name, value: v };
+            }
           }
-          bestMonth.set(pl, best.value);
-          bestNameMonth.set(pl, best.geo_name);
+          if (best) {
+            bestMonth.set(pl, best.value);
+            bestNameMonth.set(pl, best.name);
+          }
         }
       }
       if (wantUp) {
-        up_avg_series = seriesFromMap(axisKeys, aggregateAxis(upMonth), (k) => axisDisplay.get(k) || k);
+        up_avg_series = seriesFromMap(
+          axisKeys,
+          aggregateAxis(upMonth),
+          (k) => axisDisplay.get(k) || k
+        );
       }
       if (wantBest) {
         best_perf_series = seriesFromMap(

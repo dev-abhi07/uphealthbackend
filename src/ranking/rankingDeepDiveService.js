@@ -193,14 +193,59 @@ async function loadValuesForPeriods({ geoLevel, indicatorId, indicatorCode, peri
 function avg(nums) {
   const xs = nums.filter((x) => x != null && !Number.isNaN(Number(x))).map(Number);
   if (!xs.length) return null;
-  return Number((xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(4));
+  return xs.reduce((a, b) => a + b, 0) / xs.length;
 }
 
-function roundScore(v, isComposite) {
+/**
+ * FY = average of monthly indicator values for months that actually have data
+ * inside the FY window (e.g. May–Sep → sum ÷ 5). Missing months are skipped,
+ * never treated as 0.
+ *
+ * @param {Map<string, { value?: number|null }>|null|undefined} series
+ * @param {string[]} fyLabels  FY period labels through selected month (Apr…selected)
+ * @param {string[]} [availablePeriods] optional global available outcome periods
+ */
+function averageFyFromMonthlySeries(series, fyLabels, availablePeriods = null) {
+  const avail =
+    Array.isArray(availablePeriods) && availablePeriods.length
+      ? new Set(availablePeriods.map(String))
+      : null;
+  const vals = [];
+  for (const pl of fyLabels || []) {
+    if (avail && !avail.has(String(pl))) continue;
+    const cell = series && typeof series.get === 'function' ? series.get(pl) : null;
+    if (!cell || typeof cell !== 'object') continue;
+    const v = num(cell.value);
+    if (v == null) continue;
+    vals.push(v);
+  }
+  if (!vals.length) return null;
+  // sum(monthly) / count(available months)
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+/**
+ * Numeric payload fields: keep DB / computed precision (no 2dp clamp).
+ * UI should use *_display / formatDisplayNumber instead.
+ */
+function rawScore(v) {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isNaN(n) ? null : n;
+}
+
+/** UI-facing value: 2 decimals when |n| < 10 (existing table display rule). */
+function displayScore(v, unit, { isComposite = false } = {}) {
   if (v == null) return null;
   const n = Number(v);
   if (Number.isNaN(n)) return null;
-  return isComposite ? Number(n.toFixed(2)) : Number(n.toFixed(2));
+  if (isComposite) return Number(n.toFixed(2));
+  return formatValue(n, unit);
+}
+
+/** @deprecated use rawScore / displayScore — kept for call sites during transition */
+function roundScore(v) {
+  return rawScore(v);
 }
 
 /**
@@ -352,7 +397,7 @@ async function buildIndicatorBreakup({
   const breakupPeriodLabels = [...new Set([periodRow.label, ...fyLabels])];
   const breakupLoadLevel = breakupGeoLevel === 'block' ? 'block' : 'district';
 
-  // Load all indicator values from outcome for scoped geos
+  // Load indicator values for the active geo level (monthly / FY / best for scope)
   const allBreakupRows = [];
   for (const bi of allInds) {
     const rows = await loadValuesForPeriods({
@@ -371,6 +416,65 @@ async function buildIndicatorBreakup({
         rank: r.rank,
       });
     }
+  }
+
+  /**
+   * UP AVG + BEST PERF must be identical at division / district / block
+   * and when drilling into any area (Moradabad, Agra, …):
+   * both come from statewide district-level monthly values for the period.
+   */
+  /** @type {Map<string, number|null>} */
+  const upAvgByCode = new Map();
+  /** @type {Map<string, { name: string, value: number }|null>} */
+  const bestByCode = new Map();
+
+  /** @type {Array<{indicator_code: string, period: string, geo_name: string, value: *}>} */
+  let statewideDistrictMonthRows = [];
+  if (breakupLoadLevel === 'district') {
+    statewideDistrictMonthRows = allBreakupRows.filter(
+      (r) => r.period === periodRow.label
+    );
+  } else {
+    for (const bi of allInds) {
+      const distRows = await loadValuesForPeriods({
+        geoLevel: 'district',
+        indicatorCode: bi.code,
+        periodLabels: [periodRow.label],
+        isNegative: !!bi.is_negative,
+      });
+      for (const r of distRows) {
+        if (r.period !== periodRow.label) continue;
+        statewideDistrictMonthRows.push({
+          indicator_code: bi.code,
+          period: r.period,
+          geo_name: r.geo_name,
+          value: r.value,
+        });
+      }
+    }
+  }
+
+  for (const bi of allInds) {
+    const pool = statewideDistrictMonthRows.filter(
+      (r) => r.indicator_code === bi.code
+    );
+    const vals = pool.map((r) => num(r.value)).filter((v) => v != null);
+    upAvgByCode.set(bi.code, avg(vals));
+
+    const lowerIsBetter = !!bi.is_negative;
+    let best = null;
+    for (const r of pool) {
+      const v = num(r.value);
+      if (v == null) continue;
+      // Negative indicators (IND010/IND011): lower value is better
+      if (
+        !best ||
+        (lowerIsBetter ? v < best.value : v > best.value)
+      ) {
+        best = { name: r.geo_name, value: v };
+      }
+    }
+    bestByCode.set(bi.code, best);
   }
 
   const scopeSet = breakupGeoNames
@@ -398,27 +502,20 @@ async function buildIndicatorBreakup({
     }
     const monthRows = scoped.filter((r) => r.period === periodRow.label);
     const monthly = avg(monthRows.map((r) => num(r.value)));
-    const upPool = bRows.filter((r) => r.period === periodRow.label);
-    const up_avg = avg(upPool.map((r) => num(r.value)));
-    const bestPool = monthRows.length ? monthRows : upPool;
+    const up_avg =
+      upAvgByCode.has(bi.code) ? upAvgByCode.get(bi.code) : null;
+    const best = bestByCode.has(bi.code) ? bestByCode.get(bi.code) : null;
     const lowerIsBetter = !!bi.is_negative;
-    let best = null;
-    for (const r of bestPool) {
-      const v = num(r.value);
-      if (v == null) continue;
-      // Negative indicators (IND010/IND011): lower value is better
-      if (
-        !best ||
-        (lowerIsBetter ? v < best.value : v > best.value)
-      ) {
-        best = { name: r.geo_name, value: v };
-      }
-    }
+    // FY = avg of monthly values for months with data (skip empty months)
     const fyScopedVals = [];
     for (const pl of fyLabels) {
-      const a = avg(
-        scoped.filter((r) => r.period === pl).map((r) => num(r.value))
-      );
+      const monthVals = scoped
+        .filter((r) => r.period === pl)
+        .map((r) => num(r.value))
+        .filter((v) => v != null);
+      if (!monthVals.length) continue;
+      // Single-geo scope: monthVals has one value; multi-geo: use mean for that month
+      const a = avg(monthVals);
       if (a != null) fyScopedVals.push(a);
     }
     const fy = avg(fyScopedVals);
@@ -446,18 +543,18 @@ async function buildIndicatorBreakup({
       type_label: typeInfo?.label || null,
       indicator_type: typeKey,
       sort_order: bi.sort_order != null ? Number(bi.sort_order) : null,
-      up_avg: roundScore(up_avg, false),
+      up_avg: rawScore(up_avg),
       up_avg_display: formatValue(up_avg, bi.unit),
       best_perf: best
         ? {
             name: best.name,
-            value: roundScore(best.value, false),
+            value: rawScore(best.value),
             display_value: formatValue(best.value, bi.unit),
           }
         : null,
-      monthly: roundScore(monthly, false),
+      monthly: rawScore(monthly),
       monthly_display: formatValue(monthly, bi.unit),
-      fy: roundScore(fy, false),
+      fy: rawScore(fy),
       fy_display: formatValue(fy, bi.unit),
     };
   });
@@ -509,37 +606,17 @@ function enrichBreakupGroups(groups) {
     const monthlyVals = items.map((i) => i.monthly ?? i.value).filter((x) => x != null);
     const upVals = items.map((i) => i.up_avg).filter((x) => x != null);
     const fyVals = items.map((i) => i.fy).filter((x) => x != null);
-    const monthly =
-      monthlyVals.length
-        ? Number(
-            (
-              monthlyVals.reduce((a, b) => a + Number(b), 0) / monthlyVals.length
-            ).toFixed(2)
-          )
-        : null;
-    const up_avg =
-      upVals.length
-        ? Number((upVals.reduce((a, b) => a + Number(b), 0) / upVals.length).toFixed(2))
-        : null;
-    const fy =
-      fyVals.length
-        ? Number((fyVals.reduce((a, b) => a + Number(b), 0) / fyVals.length).toFixed(2))
-        : null;
+    const monthly = avg(monthlyVals);
+    const up_avg = avg(upVals);
+    const fy = avg(fyVals);
+    // Group BEST PERF from child statewide bests only (never scoped monthly)
     let best_perf = null;
     for (const i of items) {
-      const v = i.monthly ?? i.value;
-      if (v == null) continue;
-      if (!best_perf || Number(v) > Number(best_perf.value)) {
-        best_perf = {
-          name: i.name || i.indicator,
-          value: Number(v),
-          display_value: i.monthly_display || i.display_value || String(v),
-        };
-      }
-      if (i.best_perf && i.best_perf.value != null) {
-        if (!best_perf || Number(i.best_perf.value) > Number(best_perf.value)) {
-          best_perf = { ...i.best_perf };
-        }
+      if (i.best_perf == null || i.best_perf.value == null) continue;
+      const v = Number(i.best_perf.value);
+      if (!Number.isFinite(v)) continue;
+      if (!best_perf || v > Number(best_perf.value)) {
+        best_perf = { ...i.best_perf };
       }
     }
     const unit = items[0]?.unit || 'percent';
@@ -553,23 +630,12 @@ function enrichBreakupGroups(groups) {
       count: items.length,
       expandable: true,
       up_avg,
-      up_avg_display:
-        up_avg == null
-          ? null
-          : unit === 'percent'
-            ? `${up_avg}%`
-            : up_avg,
+      up_avg_display: formatValue(up_avg, unit),
       best_perf,
       monthly,
-      monthly_display:
-        monthly == null
-          ? null
-          : unit === 'percent'
-            ? `${monthly}%`
-            : monthly,
+      monthly_display: formatValue(monthly, unit),
       fy,
-      fy_display:
-        fy == null ? null : unit === 'percent' ? `${fy}%` : fy,
+      fy_display: formatValue(fy, unit),
       indicators: items,
     };
   });
@@ -739,7 +805,10 @@ async function getDeepDiveDashboard({
 
   // Fast path for table right-panel (block / district / division / state)
   if (onlyBreakup) {
-    const fyLabels = fyPeriodLabels(periodRow.label);
+    const outcomeLabels = await listOutcomePeriodLabels();
+    const fyLabels = fyPeriodLabels(periodRow.label).filter((pl) =>
+      outcomeLabels.includes(pl)
+    );
     let districtMaster = [];
     if (
       ((division || divCode) && !resolvedDistrict && !resolvedBlockName) ||
@@ -831,7 +900,9 @@ async function getDeepDiveDashboard({
       : analyticsPeriodLabels.length
         ? analyticsPeriodLabels.slice(-6)
         : trailingPeriodLabels(periodRow.label, 6);
-  const fyLabels = fyPeriodLabels(periodRow.label);
+  const fyLabelsAll = fyPeriodLabels(periodRow.label);
+  // Only months that exist in outcome cache (e.g. May–Sep, skip empty Apr)
+  const fyLabels = fyLabelsAll.filter((pl) => allOutcomeLabels.includes(pl));
   const allLabels = [
     ...new Set([...trendLabels, ...fyLabels, periodRow.label, ...analyticsPeriodLabels]),
   ];
@@ -1016,37 +1087,39 @@ async function getDeepDiveDashboard({
 
   function buildFromSeries(geoName, series, extra = {}) {
     const monthlyCell = series.get(periodRow.label);
-    const monthly = monthlyCell ? monthlyCell.value : null;
-    const fy = avg(fyLabels.map((pl) => (series.get(pl) ? series.get(pl).value : null)));
+    const monthly =
+      monthlyCell && monthlyCell.value != null ? monthlyCell.value : null;
+    // FY = sum(available monthly values) / count(available months)
+    const fy = averageFyFromMonthlySeries(series, fyLabels, allOutcomeLabels);
     const trend_series = trendLabels.map((pl) => {
       const c = series.get(pl);
       return {
         period: pl,
-        value: c ? roundScore(c.value, isComposite) : null,
-        rank: c ? c.rank : null,
+        value: c && c.value != null ? rawScore(c.value) : null,
+        rank: c && c.rank != null ? c.rank : null,
       };
     });
     const period_values = {};
     for (const pl of analyticsPeriodLabels) {
       const c = series.get(pl);
-      period_values[pl] = c ? roundScore(c.value, isComposite) : null;
+      period_values[pl] =
+        c && c.value != null ? rawScore(c.value) : null;
     }
     const trendDelta = (() => {
       const vals = trend_series.map((t) => t.value).filter((x) => x != null);
       if (vals.length < 2) return null;
-      return roundScore(vals[vals.length - 1] - vals[0], true);
+      return rawScore(vals[vals.length - 1] - vals[0]);
     })();
 
     return {
       name: geoName,
-      rank: monthlyCell ? monthlyCell.rank : null,
-      state_rank: monthlyCell ? monthlyCell.rank : null,
-      monthly: roundScore(monthly, isComposite),
-      monthly_display: isComposite
-        ? roundScore(monthly, true)
-        : formatValue(monthly, ind.unit),
-      fy: roundScore(fy, isComposite),
-      fy_display: isComposite ? roundScore(fy, true) : formatValue(fy, ind.unit),
+      rank: monthlyCell && monthlyCell.rank != null ? monthlyCell.rank : null,
+      state_rank:
+        monthlyCell && monthlyCell.rank != null ? monthlyCell.rank : null,
+      monthly: rawScore(monthly),
+      monthly_display: displayScore(monthly, ind.unit, { isComposite }),
+      fy: rawScore(fy),
+      fy_display: displayScore(fy, ind.unit, { isComposite }),
       trend_series,
       trend_delta: trendDelta,
       period_values,
@@ -1215,34 +1288,37 @@ async function getDeepDiveDashboard({
 
   // State (UP) aggregate row
   const stateMonthly = avg(rankings.map((r) => r.monthly));
-  const stateFy = avg(rankings.map((r) => r.fy));
   const stateTrend = trendLabels.map((pl) => {
     const vals = rankings
       .map((r) => {
         const t = (r.trend_series || []).find((x) => x.period === pl);
-        return t ? t.value : null;
+        return t && t.value != null ? t.value : null;
       })
       .filter((x) => x != null);
-    return { period: pl, value: roundScore(avg(vals), isComposite), rank: null };
+    return { period: pl, value: rawScore(avg(vals)), rank: null };
   });
   const statePeriodValues = {};
   for (const pl of analyticsPeriodLabels) {
     const vals = rankings
       .map((r) => (r.period_values ? r.period_values[pl] : null))
       .filter((x) => x != null);
-    statePeriodValues[pl] = roundScore(avg(vals), isComposite);
+    statePeriodValues[pl] = rawScore(avg(vals));
   }
+  // FY = avg of state monthly values across available FY months (not avg of area FYs)
+  const stateFy = avg(
+    fyLabels
+      .map((pl) => statePeriodValues[pl])
+      .filter((v) => v != null)
+  );
 
   const stateRow = {
     name: 'Uttar Pradesh',
     is_state: true,
     rank: null,
-    monthly: roundScore(stateMonthly, isComposite),
-    monthly_display: isComposite
-      ? roundScore(stateMonthly, true)
-      : formatValue(stateMonthly, ind.unit),
-    fy: roundScore(stateFy, isComposite),
-    fy_display: isComposite ? roundScore(stateFy, true) : formatValue(stateFy, ind.unit),
+    monthly: rawScore(stateMonthly),
+    monthly_display: displayScore(stateMonthly, ind.unit, { isComposite }),
+    fy: rawScore(stateFy),
+    fy_display: displayScore(stateFy, ind.unit, { isComposite }),
     trend_series: stateTrend,
     period_values: statePeriodValues,
     children: null,
@@ -1300,7 +1376,7 @@ async function getDeepDiveDashboard({
   const avgNow = avg(distScores.map((d) => d.score));
   const avgPrev = avg(summaryPrev.map((r) => num(r.value)));
   const avgChange =
-    avgNow != null && avgPrev != null ? roundScore(avgNow - avgPrev, true) : null;
+    avgNow != null && avgPrev != null ? rawScore(avgNow - avgPrev) : null;
 
   const entityLabel = geoLevel === 'block' ? 'blocks' : 'districts';
   const summary = {
@@ -1308,15 +1384,15 @@ async function getDeepDiveDashboard({
     total_entities: distScores.length,
     entity_level: geoLevel === 'block' ? 'block' : 'district',
     top_district: distScores[0]
-      ? { name: distScores[0].name, score: roundScore(distScores[0].score, isComposite) }
+      ? { name: distScores[0].name, score: rawScore(distScores[0].score) }
       : null,
     lowest_district: distScores.length
       ? {
           name: distScores[distScores.length - 1].name,
-          score: roundScore(distScores[distScores.length - 1].score, isComposite),
+          score: rawScore(distScores[distScores.length - 1].score),
         }
       : null,
-    average_score: roundScore(avgNow, isComposite),
+    average_score: rawScore(avgNow),
     average_change: avgChange,
     average_change_vs_period: compareLabel,
     note: `Summary over ${distScores.length} ${entityLabel}`,
@@ -1325,7 +1401,7 @@ async function getDeepDiveDashboard({
   // Indicator options for dropdown (from outcome master indicators)
   const { rows: indOpts } = await query(
     `
-    SELECT code, short_name, name, unit, FALSE AS is_composite, sno AS sort_order
+    SELECT code, short_name, name, unit, is_negative, FALSE AS is_composite, sno AS sort_order
     FROM indicator
     WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
     ORDER BY sno NULLS LAST, code
@@ -1338,6 +1414,7 @@ async function getDeepDiveDashboard({
       short_name: 'Overall composite score',
       unit: 'index',
       is_composite: true,
+      is_negative: false,
     },
     ...indOpts.map((r) => ({
       code: r.code,
@@ -1345,6 +1422,7 @@ async function getDeepDiveDashboard({
       short_name: r.short_name || r.name,
       unit: r.unit,
       is_composite: false,
+      is_negative: Boolean(r.is_negative),
     })),
   ];
 
