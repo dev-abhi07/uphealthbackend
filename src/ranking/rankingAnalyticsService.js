@@ -697,7 +697,7 @@ async function loadIndicatorValues({
 
 /**
  * Peer pool for UP AVG / BEST PERF (same contract as Table View breakup):
- * - block selected → Dist Avg / Best among blocks in the parent district
+ * - block selected → UP Avg / Best among all blocks statewide
  * - division / district / state → statewide district pool (block-only → all blocks)
  */
 async function loadBenchmarkPool({
@@ -718,35 +718,6 @@ async function loadBenchmarkPool({
       value: r.value,
     }));
 
-  // Block selection → Dist Avg / Best Perf within parent district's blocks
-  if (scope?.geoLevel === 'block' && (scope.districtName || scope.districtLgd != null)) {
-    const blockRows = isComposite
-      ? await loadCompositeByPeriod('block', periodLabels)
-      : await loadIndicatorByPeriod({
-          geoLevel: 'block',
-          indicatorCode: code,
-          periodLabels,
-          isNegative,
-        });
-    const distKey = normalizeGeoName(scope.districtName || '').toLowerCase();
-    const distLgd =
-      scope.districtLgd != null && Number.isFinite(Number(scope.districtLgd))
-        ? Number(scope.districtLgd)
-        : null;
-    const filtered = (blockRows || []).filter((r) => {
-      if (distLgd != null && r.district_lgd != null) {
-        return Number(r.district_lgd) === distLgd;
-      }
-      const rd = normalizeGeoName(r.district_name || '').toLowerCase();
-      return Boolean(distKey && rd && rd === distKey);
-    });
-    return {
-      pool: mapRows(filtered),
-      upAvgScope: 'district',
-      upAvgLabel: 'Dist Average',
-    };
-  }
-
   const districtRows = isComposite
     ? await loadCompositeByPeriod('district', periodLabels)
     : await loadIndicatorByPeriod({
@@ -756,6 +727,28 @@ async function loadBenchmarkPool({
         isNegative,
       });
   const districtPool = mapRows(districtRows);
+
+  // Block selection → UP Avg from districts (same as left UP); Best from all blocks
+  if (scope?.geoLevel === 'block') {
+    const blockRows = isComposite
+      ? await loadCompositeByPeriod('block', periodLabels)
+      : await loadIndicatorByPeriod({
+          geoLevel: 'block',
+          indicatorCode: code,
+          periodLabels,
+          isNegative,
+        });
+    return {
+      pool: mapRows(blockRows),
+      distAvgPool: districtPool.some((r) => r.value != null)
+        ? districtPool
+        : mapRows(blockRows),
+      upAvgScope: 'state',
+      upAvgLabel: 'UP Average',
+      bestPerfLabel: 'Best Performance',
+    };
+  }
+
   if (districtPool.some((r) => r.value != null)) {
     return {
       pool: districtPool,
@@ -921,11 +914,9 @@ async function getAnalyticsDashboard({
 
   const queryMonths = monthLabels.filter((pl) => imported.includes(pl));
   const scope = await resolveScope({ division, district, block, divCode });
-  const upAvgScope =
-    scope.geoLevel === 'block' && (scope.districtName || scope.districtLgd != null)
-      ? 'district'
-      : 'state';
-  const upAvgLabel = upAvgScope === 'district' ? 'Dist Average' : 'UP Average';
+  const upAvgScope = 'state';
+  const upAvgLabel = 'UP Average';
+  const bestPerfLabel = 'Best Performance';
 
   const { rows: masterInds } = await query(
     `
@@ -1034,24 +1025,27 @@ async function getAnalyticsDashboard({
 
     /**
      * UP AVG + BEST PERF — same rule as Table View:
-     * block → Dist Avg / Best among blocks in parent district;
-     * division / district → statewide.
+     * UP Avg = statewide district average (matches left-table UP);
+     * block Best Perf = best among all blocks statewide.
      */
     if (wantUp || wantBest) {
-      const { pool } = await loadBenchmarkPool({
+      const { pool, distAvgPool } = await loadBenchmarkPool({
         indicatorCode: ind.code,
         periodLabels: queryMonths,
         isNegative: !!ind.is_negative,
         scope,
       });
+      const upPool =
+        Array.isArray(distAvgPool) && distAvgPool.length ? distAvgPool : pool;
       const upMonth = new Map();
       const bestMonth = new Map();
       const bestNameMonth = new Map();
       const lowerIsBetter = !!ind.is_negative;
       const lastAvail = usesLastAvailablePeriodValue(ind.code);
       for (const pl of queryMonths) {
+        const upSlice = upPool.filter((r) => r.period === pl && r.value != null);
+        if (wantUp) upMonth.set(pl, avg(upSlice.map((r) => r.value)));
         const slice = pool.filter((r) => r.period === pl && r.value != null);
-        if (wantUp) upMonth.set(pl, avg(slice.map((r) => r.value)));
         if (wantBest && slice.length) {
           let best = null;
           for (const r of slice) {
@@ -1203,10 +1197,10 @@ async function getAnalyticsDashboard({
         label: axisMode === 'month' ? shortPeriodLabel(toKey) : axisDisplay.get(toKey),
         color: '#6b3f2a',
       },
-      // Matches trend panel legend (blue line = UP/Dist Average, grey band = Best)
+      // Matches trend panel legend (blue line = UP Average, grey band = Best)
       bars: { label: 'Selected area', style: 'bar', color: '#e07a3d' },
       up_avg: { label: upAvgLabel, style: 'line', color: '#1e88e5' },
-      best_perf: { label: 'Best Performance', style: 'area', color: '#bdbdbd' },
+      best_perf: { label: bestPerfLabel, style: 'area', color: '#bdbdbd' },
     },
     periods: axisKeys.map((k) => ({
       key: k,

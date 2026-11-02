@@ -533,8 +533,6 @@ module.exports = {
   isFinancialYearIndicator,
   usesLastAvailablePeriodValue,
   indicatorSupportsBlockLevel,
-  TYPE_ORDER,
-  DOMAIN_ORDER,
   DOMAIN_SLUG_TO_EXCEL,
   matchIndicatorCode,
   parseMonthLabel,
