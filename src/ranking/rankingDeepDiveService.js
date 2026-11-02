@@ -26,7 +26,7 @@ const {
   parsePanelTab,
   typeMeta,
   isCalendarYearIndicator,
-  isFinancialYearIndicator,
+  usesLastAvailablePeriodValue,
 } = require('./rankingRegistry');
 const { outcomeConfig, parsePeriodInput } = require('../outcome/outcomeConfig');
 
@@ -603,9 +603,10 @@ async function buildIndicatorBreakup({
       upAvgByCode.has(bi.code) ? upAvgByCode.get(bi.code) : null;
     const best = bestByCode.has(bi.code) ? bestByCode.get(bi.code) : null;
     const lowerIsBetter = !!bi.is_negative;
-    // FY / CY: last available API month in year window (do not re-average rates)
+    // FY: average of available months; CY / FY-special → last available only
     let fy = null;
     const yearLabels = isCalendarYearIndicator(bi.code) ? cyLabels : fyLabels;
+    const monthAvgs = [];
     for (const pl of yearLabels) {
       const monthVals = scoped
         .filter((r) => r.period === pl)
@@ -613,8 +614,11 @@ async function buildIndicatorBreakup({
         .filter((v) => v != null);
       if (!monthVals.length) continue;
       const a = avg(monthVals);
-      if (a != null) fy = a;
+      if (a == null) continue;
+      if (usesLastAvailablePeriodValue(bi.code)) fy = a;
+      else monthAvgs.push(a);
     }
+    if (!usesLastAvailablePeriodValue(bi.code)) fy = avg(monthAvgs);
 
     const excel = resolveExcelDomainKey(bi.domain_label, bi.domain);
     const typeKey = String(bi.indicator_type || '')
@@ -1189,9 +1193,11 @@ async function getDeepDiveDashboard({
     const monthlyCell = series.get(periodRow.label);
     const monthly =
       monthlyCell && monthlyCell.value != null ? monthlyCell.value : null;
-    // FY / CY: use last available API month in the year window (do not re-average rates)
+    // FY = avg of available months; CY / FY-special indicators keep last-available
     const yearLabels = isCalendarYearIndicator(ind.code) ? cyLabels : fyLabels;
-    const fy = lastAvailableFromSeries(series, yearLabels, allOutcomeLabels);
+    const fy = usesLastAvailablePeriodValue(ind.code)
+      ? lastAvailableFromSeries(series, yearLabels, allOutcomeLabels)
+      : averageFyFromMonthlySeries(series, yearLabels, allOutcomeLabels);
     const trend_series = trendLabels.map((pl) => {
       const c = series.get(pl);
       return {
@@ -1311,22 +1317,6 @@ async function getDeepDiveDashboard({
     return children;
   }
 
-  /**
-   * District MONTHLY stays the district API value as-is.
-   * District FY (Dist FY) = Dist Avg for the selected month (mean of block
-   * API values) — never re-average the district's monthly rates across months.
-   */
-  function withDistrictFyFromBlocks(distRow, blockChildren) {
-    if (!blockChildren || !blockChildren.length) return distRow;
-    const fy = avg(blockChildren.map((c) => c.monthly));
-    if (fy == null) return distRow;
-    return {
-      ...distRow,
-      fy: rawScore(fy),
-      fy_display: displayScore(fy, ind.unit, { isComposite }),
-    };
-  }
-
   let rankings = geoKeys.map(buildRow);
   rankings.sort(sortRankRows);
 
@@ -1350,13 +1340,12 @@ async function getDeepDiveDashboard({
 
     function buildDistrictRow(geoName) {
       const blockChildren = buildBlockChildren(geoName);
-      const row = buildFromSeries(geoName, distByGeo.get(geoName) || new Map(), {
+      return buildFromSeries(geoName, distByGeo.get(geoName) || new Map(), {
         geo_level: 'district',
         children: blockChildren,
         child_count: blockChildren.length,
         expandable: blockChildren.length > 0,
       });
-      return withDistrictFyFromBlocks(row, blockChildren);
     }
 
     let allDistrictNames = [...distByGeo.keys()];
@@ -1393,16 +1382,13 @@ async function getDeepDiveDashboard({
     // By District tab: expand district → blocks
     rankings = rankings.map((distRow) => {
       const blockChildren = buildBlockChildren(distRow.name);
-      return withDistrictFyFromBlocks(
-        {
-          ...distRow,
-          geo_level: 'district',
-          children: blockChildren,
-          child_count: blockChildren.length,
-          expandable: blockChildren.length > 0,
-        },
-        blockChildren
-      );
+      return {
+        ...distRow,
+        geo_level: 'district',
+        children: blockChildren,
+        child_count: blockChildren.length,
+        expandable: blockChildren.length > 0,
+      };
     });
   } else if (geoLevel === 'block') {
     rankings = rankings.map((row, idx) => ({
@@ -1435,17 +1421,28 @@ async function getDeepDiveDashboard({
       .filter((x) => x != null);
     statePeriodValues[pl] = rawScore(avg(vals));
   }
-  // FY: last available API month in year window (do not re-average rates)
+  // FY = average of district/block FY values (each already avg of available months);
+  // CY / FY-special → last available statewide month only
   const stateYearLabels = isCalendarYearIndicator(ind.code)
     ? cyLabels
     : fyLabels;
   const stateFy = (() => {
-    let last = null;
+    if (usesLastAvailablePeriodValue(ind.code)) {
+      let last = null;
+      for (const pl of stateYearLabels) {
+        const v = statePeriodValues[pl];
+        if (v != null) last = v;
+      }
+      return last;
+    }
+    const fromRows = avg(rankings.map((r) => r.fy));
+    if (fromRows != null) return fromRows;
+    const vals = [];
     for (const pl of stateYearLabels) {
       const v = statePeriodValues[pl];
-      if (v != null) last = v;
+      if (v != null) vals.push(v);
     }
-    return last;
+    return avg(vals);
   })();
 
   const stateRow = {
