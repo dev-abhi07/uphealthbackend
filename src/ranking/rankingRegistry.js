@@ -500,28 +500,9 @@ function parsePanelTab(raw, { defaultTab = 'indicators' } = {}) {
 function applyPanelTabShape(data, panelTabRaw, { defaultTab = 'indicators' } = {}) {
   if (!data || typeof data !== 'object') return data;
   const panel = parsePanelTab(panelTabRaw, { defaultTab });
-  const out = { ...data, panel_tab: panel };
-
-  if (panel === 'all') {
-    return out;
-  }
-  if (panel === 'indicators') {
-    out.by_type = [];
-    out.by_domain = [];
-    return out;
-  }
-  if (panel === 'type') {
-    out.indicators = [];
-    out.by_domain = [];
-    // keep by_type
-    return out;
-  }
-  if (panel === 'domain') {
-    out.indicators = [];
-    out.by_type = [];
-    return out;
-  }
-  return out;
+  // Keep indicators + by_type + by_domain together so Domain → Indicator
+  // filter and BY DOMAIN accordion always have a full catalog (FE picks tab UI).
+  return { ...data, panel_tab: panel };
 }
 
 module.exports = {
