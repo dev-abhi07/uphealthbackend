@@ -2,6 +2,65 @@
  * Ranking Excel indicator matching — separate from HMIS templateRegistry.
  */
 
+/**
+ * Calendar-year indicators (Jan–Dec): no FY Apr–Mar average.
+ * Month → as reported; quarter / year → last available month in that window.
+ * FY column = last available month in calendar year Jan→selected.
+ */
+const CALENDAR_YEAR_INDICATORS = new Set([
+  'IND008',
+  'IND020',
+  'IND021',
+  'IND022',
+]);
+
+/**
+ * Financial-year indicators (Apr–Mar): no FY month average.
+ * Month → as reported; quarter / year → last available month in that window.
+ * FY column = last available month in FY Apr→selected.
+ */
+const FINANCIAL_YEAR_INDICATORS = new Set([
+  'IND023',
+  'IND024',
+  'IND028',
+  'IND030',
+  'IND031',
+  'IND036',
+]);
+
+function normalizeIndicatorCode(code) {
+  return String(code || '')
+    .trim()
+    .toUpperCase();
+}
+
+function isCalendarYearIndicator(code) {
+  return CALENDAR_YEAR_INDICATORS.has(normalizeIndicatorCode(code));
+}
+
+function isFinancialYearIndicator(code) {
+  return FINANCIAL_YEAR_INDICATORS.has(normalizeIndicatorCode(code));
+}
+
+/** CY or FY special indicators: use last-available month (not period average). */
+function usesLastAvailablePeriodValue(code) {
+  const c = normalizeIndicatorCode(code);
+  return CALENDAR_YEAR_INDICATORS.has(c) || FINANCIAL_YEAR_INDICATORS.has(c);
+}
+
+/**
+ * Composite / both / block / facility → may show at block level.
+ * District-only ranking_level → hide when analytics/table geo is block.
+ */
+function indicatorSupportsBlockLevel(ind) {
+  if (!ind) return false;
+  if (ind.is_composite) return true;
+  const rl = String(ind.ranking_level || '')
+    .trim()
+    .toLowerCase();
+  return rl === 'both' || rl === 'block' || rl === 'facility';
+}
+
 /** UI groups for BY TYPE tab (SUMMARY panel). */
 const TYPE_ORDER = [
   { key: 'coverage', label: 'COVERAGE', color: '#e07a3d' },
@@ -468,6 +527,12 @@ function applyPanelTabShape(data, panelTabRaw, { defaultTab = 'indicators' } = {
 module.exports = {
   INDICATORS,
   INDICATOR_GROUPING,
+  CALENDAR_YEAR_INDICATORS,
+  FINANCIAL_YEAR_INDICATORS,
+  isCalendarYearIndicator,
+  isFinancialYearIndicator,
+  usesLastAvailablePeriodValue,
+  indicatorSupportsBlockLevel,
   TYPE_ORDER,
   DOMAIN_ORDER,
   DOMAIN_SLUG_TO_EXCEL,

@@ -333,6 +333,42 @@ async function getBlockOutcomeDashboard({
   });
 
   if (!composite) {
+    /** @type {Map<number, number>} */
+    let stateRankByLgd = new Map();
+    if (filtered) {
+      // Statewide peer set for true UP block ranks
+      const allHeaders = await store.getBlockHeaders({
+        year: p.year,
+        month: p.month,
+        districtLgd: null,
+      });
+      const allVals = await store.getBlockValues({
+        year: p.year,
+        month: p.month,
+        indicatorCode: selectedInd.code,
+        districtLgd: null,
+      });
+      const allByLgd = new Map(
+        allVals.map((v) => [Number(v.block_lgd), num(v.value)])
+      );
+      let statePool = allHeaders.map((h) => {
+        const lgd = Number(h.block_lgd);
+        return { lgd, score: allByLgd.has(lgd) ? allByLgd.get(lgd) : null };
+      });
+      statePool.sort((a, b) => {
+        const av = a.score;
+        const bv = b.score;
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        if (selectedInd.is_negative) return av - bv;
+        return bv - av;
+      });
+      statePool.forEach((r, i) => {
+        if (r.score != null) stateRankByLgd.set(r.lgd, i + 1);
+      });
+    }
+
     ranked.sort((a, b) => {
       const av = a.score;
       const bv = b.score;
@@ -342,7 +378,14 @@ async function getBlockOutcomeDashboard({
       if (selectedInd.is_negative) return av - bv;
       return bv - av;
     });
-    ranked = ranked.map((r, i) => ({ ...r, rank: i + 1 }));
+    ranked = ranked.map((r, i) => ({
+      ...r,
+      rank: filtered
+        ? stateRankByLgd.get(r.lgd) != null
+          ? stateRankByLgd.get(r.lgd)
+          : null
+        : i + 1,
+    }));
   } else {
     ranked.sort((a, b) => {
       const ar = a.rank != null ? a.rank : 9999;
@@ -363,8 +406,8 @@ async function getBlockOutcomeDashboard({
 
   const ranking = ranked.map((r, idx) => {
     const localRank = idx + 1;
+    // `rank` / `state_rank` = UP-wide rank; `list_index` / `local_rank` = 1..n in this list
     const stateRank = r.rank != null ? Number(r.rank) : localRank;
-    // Always expose API / outcome rank as `rank` (not densified list position)
     const rank = stateRank;
     const prevH = prevByLgd.get(r.lgd);
     const prevRank =
@@ -390,7 +433,7 @@ async function getBlockOutcomeDashboard({
     const item = {
       rank,
       state_rank: stateRank,
-      local_rank: stateRank,
+      local_rank: localRank,
       list_index: localRank,
       id: r.h.block_id != null ? Number(r.h.block_id) : null,
       block_id: r.h.block_id != null ? Number(r.h.block_id) : null,

@@ -321,7 +321,8 @@ async function getDistrictOutcomeDashboard({
     bottom: { label: `Bottom ${nBand} Districts`, color: 'red', count: 0, items: [], size: nBand },
   };
 
-  // Rank by selected metric for display when not composite (sheet has no per-IND rank)
+  // Rank by selected metric. When scoped to a division, still use UP-wide ranks
+  // (not 1..n within the division) so map drilldown can show "Rank across UP".
   let ranked = headers.map((h, idx) => {
     const lgd = Number(h.district_lgd);
     const score = composite ? num(h.index_outcome) : valueByLgd.has(lgd) ? valueByLgd.get(lgd) : null;
@@ -338,6 +339,44 @@ async function getDistrictOutcomeDashboard({
   });
 
   if (!composite) {
+    /** @type {Map<number, number>} */
+    let stateRankByLgd = new Map();
+    if (filtered) {
+      // Statewide peer set for true UP ranks, then keep only this division's rows
+      const allHeaders = await store.getDistrictHeaders({
+        year: p.year,
+        month: p.month,
+        districtLgd: null,
+        divisionId: null,
+      });
+      const allVals = await store.getDistrictValues({
+        year: p.year,
+        month: p.month,
+        indicatorCode: selectedInd.code,
+        districtLgd: null,
+        divisionId: null,
+      });
+      const allByLgd = new Map(
+        allVals.map((v) => [Number(v.district_lgd), num(v.value)])
+      );
+      let statePool = allHeaders.map((h) => {
+        const lgd = Number(h.district_lgd);
+        return { lgd, score: allByLgd.has(lgd) ? allByLgd.get(lgd) : null };
+      });
+      statePool.sort((a, b) => {
+        const av = a.score;
+        const bv = b.score;
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        if (selectedInd.is_negative) return av - bv;
+        return bv - av;
+      });
+      statePool.forEach((r, i) => {
+        if (r.score != null) stateRankByLgd.set(r.lgd, i + 1);
+      });
+    }
+
     ranked.sort((a, b) => {
       const av = a.score;
       const bv = b.score;
@@ -348,7 +387,14 @@ async function getDistrictOutcomeDashboard({
       if (selectedInd.is_negative) return av - bv;
       return bv - av;
     });
-    ranked = ranked.map((r, i) => ({ ...r, rank: i + 1 }));
+    ranked = ranked.map((r, i) => ({
+      ...r,
+      rank: filtered
+        ? stateRankByLgd.get(r.lgd) != null
+          ? stateRankByLgd.get(r.lgd)
+          : null
+        : i + 1,
+    }));
   } else {
     ranked.sort((a, b) => {
       const ar = a.rank != null ? a.rank : 9999;
@@ -369,7 +415,7 @@ async function getDistrictOutcomeDashboard({
 
   const ranking = ranked.map((r, idx) => {
     const localRank = idx + 1;
-    // Always expose API / outcome rank as `rank` (not densified list position)
+    // `rank` / `state_rank` = UP-wide rank; `list_index` / `local_rank` = 1..n in this list
     const stateRank = r.rank != null ? Number(r.rank) : localRank;
     const rank = stateRank;
     const prevH = prevByLgd.get(r.lgd);
@@ -395,7 +441,7 @@ async function getDistrictOutcomeDashboard({
     const item = {
       rank,
       state_rank: stateRank,
-      local_rank: stateRank,
+      local_rank: localRank,
       list_index: localRank,
       // Canonical IDs for map/table click → send back as area_id or district=
       id: r.h.district_id != null ? Number(r.h.district_id) : null,

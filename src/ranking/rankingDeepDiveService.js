@@ -20,7 +20,14 @@ const {
   districtNamesForFilter,
   normalizeKey,
 } = require('./geoCategoryFilter');
-const { groupIndicatorsForSummary, resolveExcelDomainKey, parsePanelTab, typeMeta } = require('./rankingRegistry');
+const {
+  groupIndicatorsForSummary,
+  resolveExcelDomainKey,
+  parsePanelTab,
+  typeMeta,
+  isCalendarYearIndicator,
+  isFinancialYearIndicator,
+} = require('./rankingRegistry');
 const { outcomeConfig, parsePeriodInput } = require('../outcome/outcomeConfig');
 
 /** Avoid hammering upstream when FE fires many parallel dashboard GETs. */
@@ -131,6 +138,35 @@ function fyPeriodLabels(periodLabel) {
   return out;
 }
 
+/** Calendar year Jan–Dec: periods from Jan of selected year through selected month. */
+function calendarYearPeriodLabels(periodLabel) {
+  const p = parsePeriodLabel(periodLabel);
+  if (!p) return [];
+  const out = [];
+  for (let m = 1; m <= p.month; m += 1) {
+    out.push(`${p.year}-${String(m).padStart(2, '0')}`);
+  }
+  return out;
+}
+
+/** Last non-null monthly value in label order (for calendar-year indicators). */
+function lastAvailableFromSeries(series, labels, availablePeriods = null) {
+  const avail =
+    Array.isArray(availablePeriods) && availablePeriods.length
+      ? new Set(availablePeriods.map(String))
+      : null;
+  let last = null;
+  for (const pl of labels || []) {
+    if (avail && !avail.has(String(pl))) continue;
+    const cell = series && typeof series.get === 'function' ? series.get(pl) : null;
+    if (!cell || typeof cell !== 'object') continue;
+    const v = num(cell.value);
+    if (v == null) continue;
+    last = v;
+  }
+  return last;
+}
+
 /** Inclusive month range ending at periodLabel, length up to `count`. */
 function trailingPeriodLabels(periodLabel, count = 6) {
   const out = [];
@@ -143,6 +179,33 @@ function trailingPeriodLabels(periodLabel, count = 6) {
   return out;
 }
 
+/** Enumerate YYYY-MM labels from `fromLabel` through `toLabel` (inclusive). */
+function enumeratePeriodLabels(fromLabel, toLabel) {
+  const start = String(fromLabel || '').trim();
+  const end = String(toLabel || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(start) || !/^\d{4}-\d{2}$/.test(end)) return [];
+  const lo = start <= end ? start : end;
+  const hi = start <= end ? end : start;
+  const out = [];
+  let cur = lo;
+  while (cur && cur <= hi) {
+    out.push(cur);
+    const next = (() => {
+      const [ys, ms] = cur.split('-');
+      let y = Number(ys);
+      let m = Number(ms) + 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+      return `${y}-${String(m).padStart(2, '0')}`;
+    })();
+    if (next === cur) break;
+    cur = next;
+  }
+  return out;
+}
+
 async function resolvePeriod(period) {
   return resolveOutcomePeriod(period);
 }
@@ -150,6 +213,9 @@ async function resolvePeriod(period) {
 async function resolveIndicator(code) {
   const ind = await resolveMasterIndicator(code);
   if (!ind) return null;
+  const rankingLevel = String(ind.ranking_level || '')
+    .trim()
+    .toLowerCase();
   return {
     id: ind.id || ind.code,
     code: ind.code,
@@ -158,7 +224,20 @@ async function resolveIndicator(code) {
     unit: ind.unit,
     is_composite: !!ind.is_composite,
     is_negative: !!ind.is_negative,
+    ranking_level: ind.is_composite
+      ? 'both'
+      : rankingLevel || 'district',
   };
+}
+
+/** Composite / both / block / facility → may list block rows. District-only → never. */
+function indicatorSupportsBlockLevel(ind) {
+  if (!ind) return false;
+  if (ind.is_composite) return true;
+  const rl = String(ind.ranking_level || '')
+    .trim()
+    .toLowerCase();
+  return rl === 'both' || rl === 'block' || rl === 'facility';
 }
 
 async function loadValuesForPeriods({ geoLevel, indicatorId, indicatorCode, periodLabels, isNegative }) {
@@ -394,7 +473,10 @@ async function buildIndicatorBreakup({
     `
   );
 
-  const breakupPeriodLabels = [...new Set([periodRow.label, ...fyLabels])];
+  const cyLabels = calendarYearPeriodLabels(periodRow.label);
+  const breakupPeriodLabels = [
+    ...new Set([periodRow.label, ...fyLabels, ...cyLabels]),
+  ];
   const breakupLoadLevel = breakupGeoLevel === 'block' ? 'block' : 'district';
 
   // Load indicator values for the active geo level (monthly / FY / best for scope)
@@ -419,19 +501,31 @@ async function buildIndicatorBreakup({
   }
 
   /**
-   * UP AVG + BEST PERF must be identical at division / district / block
-   * and when drilling into any area (Moradabad, Agra, …):
-   * both come from statewide district-level monthly values for the period.
+   * UP AVG + BEST PERF:
+   * - division / district / state → statewide district-level pool
+   * - block → Dist Avg + Best Perf within the parent district’s blocks
    */
   /** @type {Map<string, number|null>} */
   const upAvgByCode = new Map();
   /** @type {Map<string, { name: string, value: number }|null>} */
   const bestByCode = new Map();
+  /** @type {'state'|'district'} */
+  let upAvgScope = 'state';
 
-  /** @type {Array<{indicator_code: string, period: string, geo_name: string, value: *}>} */
-  let statewideDistrictMonthRows = [];
-  if (breakupLoadLevel === 'district') {
-    statewideDistrictMonthRows = allBreakupRows.filter(
+  /** @type {Array<{indicator_code: string, period: string, geo_name: string, district_name?: string|null, value: *}>} */
+  let comparePoolRows = [];
+
+  if (breakupGeoLevel === 'block' && resolvedScopeDistrict) {
+    // Dist Avg / Best Perf among blocks in the selected block’s parent district
+    upAvgScope = 'district';
+    const distKey = resolvedScopeDistrict.toLowerCase();
+    comparePoolRows = allBreakupRows.filter((r) => {
+      if (r.period !== periodRow.label) return false;
+      const d = normalizeGeoName(r.district_name || '').toLowerCase();
+      return d === distKey;
+    });
+  } else if (breakupLoadLevel === 'district') {
+    comparePoolRows = allBreakupRows.filter(
       (r) => r.period === periodRow.label
     );
   } else {
@@ -444,7 +538,7 @@ async function buildIndicatorBreakup({
       });
       for (const r of distRows) {
         if (r.period !== periodRow.label) continue;
-        statewideDistrictMonthRows.push({
+        comparePoolRows.push({
           indicator_code: bi.code,
           period: r.period,
           geo_name: r.geo_name,
@@ -455,7 +549,7 @@ async function buildIndicatorBreakup({
   }
 
   for (const bi of allInds) {
-    const pool = statewideDistrictMonthRows.filter(
+    const pool = comparePoolRows.filter(
       (r) => r.indicator_code === bi.code
     );
     const vals = pool.map((r) => num(r.value)).filter((v) => v != null);
@@ -506,19 +600,33 @@ async function buildIndicatorBreakup({
       upAvgByCode.has(bi.code) ? upAvgByCode.get(bi.code) : null;
     const best = bestByCode.has(bi.code) ? bestByCode.get(bi.code) : null;
     const lowerIsBetter = !!bi.is_negative;
-    // FY = avg of monthly values for months with data (skip empty months)
-    const fyScopedVals = [];
-    for (const pl of fyLabels) {
-      const monthVals = scoped
-        .filter((r) => r.period === pl)
-        .map((r) => num(r.value))
-        .filter((v) => v != null);
-      if (!monthVals.length) continue;
-      // Single-geo scope: monthVals has one value; multi-geo: use mean for that month
-      const a = avg(monthVals);
-      if (a != null) fyScopedVals.push(a);
+    // CY indicators: Jan→selected last available · FY indicators: Apr→selected last available
+    // Others: FY = avg of monthly values for months with data (skip empty months)
+    let fy = null;
+    if (isCalendarYearIndicator(bi.code) || isFinancialYearIndicator(bi.code)) {
+      const yearLabels = isCalendarYearIndicator(bi.code) ? cyLabels : fyLabels;
+      for (const pl of yearLabels) {
+        const monthVals = scoped
+          .filter((r) => r.period === pl)
+          .map((r) => num(r.value))
+          .filter((v) => v != null);
+        if (!monthVals.length) continue;
+        const a = avg(monthVals);
+        if (a != null) fy = a;
+      }
+    } else {
+      const fyScopedVals = [];
+      for (const pl of fyLabels) {
+        const monthVals = scoped
+          .filter((r) => r.period === pl)
+          .map((r) => num(r.value))
+          .filter((v) => v != null);
+        if (!monthVals.length) continue;
+        const a = avg(monthVals);
+        if (a != null) fyScopedVals.push(a);
+      }
+      fy = avg(fyScopedVals);
     }
-    const fy = avg(fyScopedVals);
 
     const excel = resolveExcelDomainKey(bi.domain_label, bi.domain);
     const typeKey = String(bi.indicator_type || '')
@@ -567,6 +675,8 @@ async function buildIndicatorBreakup({
   return {
     breakup_scope: breakupTitle,
     breakup_geo_level: breakupGeoLevel,
+    up_avg_scope: upAvgScope,
+    up_avg_label: upAvgScope === 'district' ? 'Dist Avg' : 'UP Avg',
     indicator_breakup,
   };
 }
@@ -715,6 +825,8 @@ async function getDeepDiveDashboard({
   labels = true,
   analyticsCompare = 'timeperiod',
   analyticsMode = 'month',
+  analyticsFrom = null,
+  analyticsTo = null,
   breakupOnly = false,
 } = {}) {
   const uiView = view === 'table' || String(view).toLowerCase() === 'table' ? 'table' : 'deep_dive';
@@ -859,6 +971,8 @@ async function getDeepDiveDashboard({
       filter: parseFilter(filter),
       breakup_scope: breakup.breakup_scope,
       breakup_geo_level: breakup.breakup_geo_level,
+      up_avg_scope: breakup.up_avg_scope || 'state',
+      up_avg_label: breakup.up_avg_label || 'UP Avg',
       summary_scope: breakup.breakup_geo_level,
       district: resolvedDistrict || null,
       block: resolvedBlockName || null,
@@ -894,17 +1008,31 @@ async function getDeepDiveDashboard({
   // Month columns for timeperiod analytics: outcome periods up to selected
   const allOutcomeLabels = await listOutcomePeriodLabels();
   const analyticsPeriodLabels = allOutcomeLabels.filter((l) => l <= periodRow.label);
+  // Optional FE window (e.g. quarter Jul–Sep) → use that for TREND instead of trailing 6
+  const trendWindow = enumeratePeriodLabels(analyticsFrom, analyticsTo).filter(
+    (pl) => allOutcomeLabels.includes(pl) && pl <= periodRow.label
+  );
   const trendLabels =
-    mode === 'fy'
-      ? fyPeriodLabels(periodRow.label)
-      : analyticsPeriodLabels.length
-        ? analyticsPeriodLabels.slice(-6)
-        : trailingPeriodLabels(periodRow.label, 6);
+    trendWindow.length > 0
+      ? trendWindow
+      : mode === 'fy'
+        ? fyPeriodLabels(periodRow.label)
+        : analyticsPeriodLabels.length
+          ? analyticsPeriodLabels.slice(-6)
+          : trailingPeriodLabels(periodRow.label, 6);
   const fyLabelsAll = fyPeriodLabels(periodRow.label);
   // Only months that exist in outcome cache (e.g. May–Sep, skip empty Apr)
   const fyLabels = fyLabelsAll.filter((pl) => allOutcomeLabels.includes(pl));
+  const cyLabelsAll = calendarYearPeriodLabels(periodRow.label);
+  const cyLabels = cyLabelsAll.filter((pl) => allOutcomeLabels.includes(pl));
   const allLabels = [
-    ...new Set([...trendLabels, ...fyLabels, periodRow.label, ...analyticsPeriodLabels]),
+    ...new Set([
+      ...trendLabels,
+      ...fyLabels,
+      ...cyLabels,
+      periodRow.label,
+      ...analyticsPeriodLabels,
+    ]),
   ];
 
   const rowsRaw = await loadValuesForPeriods({
@@ -973,39 +1101,21 @@ async function getDeepDiveDashboard({
     }
   }
 
-  // Block table: if this indicator has no block values (common for some INDs),
-  // still list the district's blocks (from composite headers) with null scores
-  // so the response shape stays consistent across indicators.
-  let indicatorHasBlockValues = true;
-  if (geoLevel === 'block' && resolvedDistrict) {
-    const periodHasValues = rows.some((r) => r.period === periodRow.label && r.value != null);
-    if (!periodHasValues) {
+  // Never scaffold empty block rows for district-only / missing indicators.
+  // Blocks without a value for the selected period must not appear in the table.
+  let indicatorHasBlockValues = indicatorSupportsBlockLevel(ind);
+  if (geoLevel === 'block') {
+    if (!indicatorSupportsBlockLevel(ind)) {
       indicatorHasBlockValues = false;
-      const compositeScaffold = await loadValuesForPeriods({
-        geoLevel: 'block',
-        indicatorCode: 'RANK_COMPOSITE',
-        periodLabels: [periodRow.label],
-        isNegative: false,
-      });
-      const distKey = normalizeGeoName(resolvedDistrict).toLowerCase();
-      const scaffold = compositeScaffold.filter(
-        (r) => normalizeGeoName(r.district_name || '').toLowerCase() === distKey
+      rows = [];
+    } else {
+      rows = rows.filter(
+        (r) => r.period !== periodRow.label || r.value != null
       );
-      const seen = new Set();
-      for (const r of scaffold) {
-        const key = String(r.geo_name || '').toLowerCase();
-        if (!key || seen.has(key)) continue;
-        seen.add(key);
-        rows.push({
-          period: periodRow.label,
-          geo_name: r.geo_name,
-          district_name: r.district_name || resolvedDistrict,
-          district_lgd: r.district_lgd,
-          block_lgd: r.block_lgd,
-          value: null,
-          rank: null,
-        });
-      }
+      const periodHasValues = rows.some(
+        (r) => r.period === periodRow.label && r.value != null
+      );
+      if (!periodHasValues) indicatorHasBlockValues = false;
     }
   }
 
@@ -1089,8 +1199,12 @@ async function getDeepDiveDashboard({
     const monthlyCell = series.get(periodRow.label);
     const monthly =
       monthlyCell && monthlyCell.value != null ? monthlyCell.value : null;
-    // FY = sum(available monthly values) / count(available months)
-    const fy = averageFyFromMonthlySeries(series, fyLabels, allOutcomeLabels);
+    // CY: Jan→selected last available · FY-special: Apr→selected last available · else FY avg
+    const fy = isCalendarYearIndicator(ind.code)
+      ? lastAvailableFromSeries(series, cyLabels, allOutcomeLabels)
+      : isFinancialYearIndicator(ind.code)
+        ? lastAvailableFromSeries(series, fyLabels, allOutcomeLabels)
+        : averageFyFromMonthlySeries(series, fyLabels, allOutcomeLabels);
     const trend_series = trendLabels.map((pl) => {
       const c = series.get(pl);
       return {
@@ -1144,12 +1258,18 @@ async function getDeepDiveDashboard({
   }
 
   // Block series keyed by district → block name (for Division→District→Block expand)
-  const blockRows = await loadValuesForPeriods({
-    geoLevel: 'block',
-    indicatorCode: ind.code,
-    periodLabels: allLabels,
-    isNegative: !!ind.is_negative,
-  });
+  const blockCapable = indicatorSupportsBlockLevel(ind);
+  if (!blockCapable) {
+    indicatorHasBlockValues = false;
+  }
+  const blockRows = blockCapable
+    ? await loadValuesForPeriods({
+        geoLevel: 'block',
+        indicatorCode: ind.code,
+        periodLabels: allLabels,
+        isNegative: !!ind.is_negative,
+      })
+    : [];
   /** @type {Map<string, Map<string, Map<string, {value:number|null, rank:number|null}>>>} */
   const blocksByDistrict = new Map();
   /** @type {Map<string, Map<string, {block_lgd:any, district_lgd:any}>>} */
@@ -1175,11 +1295,12 @@ async function getDeepDiveDashboard({
   }
 
   function buildBlockChildren(districtName) {
+    if (!blockCapable) return [];
     const distKey = String(districtName).toLowerCase();
     const byBlock = blocksByDistrict.get(distKey);
     if (!byBlock) return [];
     const metaMap = blockMetaByDistrict.get(distKey) || new Map();
-    return [...byBlock.keys()]
+    const children = [...byBlock.keys()]
       .filter((blockName) => {
         if (filterKey !== 'aspirational') return true;
         const meta = metaMap.get(blockName) || {};
@@ -1197,7 +1318,10 @@ async function getDeepDiveDashboard({
           expandable: false,
         });
       })
+      // Hide blocks with no value for the selected indicator/period
+      .filter((row) => row.monthly != null)
       .sort(sortRankRows);
+    return children;
   }
 
   let rankings = geoKeys.map(buildRow);
@@ -1305,11 +1429,25 @@ async function getDeepDiveDashboard({
     statePeriodValues[pl] = rawScore(avg(vals));
   }
   // FY = avg of state monthly values across available FY months (not avg of area FYs)
-  const stateFy = avg(
-    fyLabels
-      .map((pl) => statePeriodValues[pl])
-      .filter((v) => v != null)
-  );
+  // CY / FY-special indicators: last available month in their year window
+  const stateYearLabels = isCalendarYearIndicator(ind.code)
+    ? cyLabels
+    : fyLabels;
+  const stateFy =
+    isCalendarYearIndicator(ind.code) || isFinancialYearIndicator(ind.code)
+      ? (() => {
+          let last = null;
+          for (const pl of stateYearLabels) {
+            const v = statePeriodValues[pl];
+            if (v != null) last = v;
+          }
+          return last;
+        })()
+      : avg(
+          fyLabels
+            .map((pl) => statePeriodValues[pl])
+            .filter((v) => v != null)
+        );
 
   const stateRow = {
     name: 'Uttar Pradesh',
@@ -1481,12 +1619,13 @@ async function getDeepDiveDashboard({
       name: ind.short_name || ind.name,
       unit: ind.unit,
       is_composite: ind.is_composite,
+      ranking_level: ind.ranking_level || (ind.is_composite ? 'both' : 'district'),
       has_block_values: indicatorHasBlockValues !== false,
     },
     indicator_has_block_values: indicatorHasBlockValues !== false,
     missing_block_values_message:
       indicatorHasBlockValues === false
-        ? 'No block-level values for this indicator in the outcome cache; block rows listed with empty scores.'
+        ? 'No block-level values for this indicator; blocks without data are omitted.'
         : null,
     trend_from: trendLabels[0] || null,
     trend_to: trendLabels[trendLabels.length - 1] || null,
@@ -1504,6 +1643,8 @@ async function getDeepDiveDashboard({
           : ['district', 'block'],
     breakup_scope: breakupTitle,
     breakup_geo_level: breakup.breakup_geo_level,
+    up_avg_scope: breakup.up_avg_scope || 'state',
+    up_avg_label: breakup.up_avg_label || 'UP Avg',
     summary_scope: breakup.breakup_geo_level || (resolvedDistrict ? 'district' : 'state'),
     district: resolvedDistrict || null,
     block: resolvedBlockName || null,

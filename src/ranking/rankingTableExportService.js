@@ -357,8 +357,8 @@ async function loadExactValueTextMap({
   const map = new Map();
   try {
     if (isComposite && geoLevel === 'district') {
-      const { rows } = await query(
-        `
+    const { rows } = await query(
+      `
         SELECT o.district_lgd,
                COALESCE(d.name, o.district_name) AS name,
                o.index_outcome::text AS value_text
@@ -399,8 +399,8 @@ async function loadExactValueTextMap({
     }
 
     if (isComposite && geoLevel === 'division') {
-      const { rows } = await query(
-        `
+  const { rows } = await query(
+    `
         SELECT div.name AS name,
                AVG(o.index_outcome)::text AS value_text
         FROM indicator_outcome_district o
@@ -468,8 +468,8 @@ async function loadExactValueTextMap({
     }
 
     if (!isComposite && indicatorCode && geoLevel === 'division') {
-      const { rows } = await query(
-        `
+  const { rows } = await query(
+    `
         SELECT div.name AS name,
                AVG(v.value)::text AS value_text
         FROM indicator_outcome_district_value v

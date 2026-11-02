@@ -358,6 +358,8 @@ async function dashboard(req, res) {
       labels: req.query.labels,
       analyticsCompare: req.query.analytics_compare || 'timeperiod',
       analyticsMode: req.query.analytics_mode || 'month',
+      analyticsFrom: req.query.analytics_from || null,
+      analyticsTo: req.query.analytics_to || null,
       breakupOnly:
         (req.query.breakup_only === '1' ||
           req.query.breakup_only === 'true' ||
