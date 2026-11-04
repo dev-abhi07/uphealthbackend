@@ -474,8 +474,11 @@ async function buildIndicatorBreakup({
   );
 
   const cyLabels = calendarYearPeriodLabels(periodRow.label);
+  const breakupPrevLabel = prevMonthLabel(periodRow.label);
   const breakupPeriodLabels = [
-    ...new Set([periodRow.label, ...fyLabels, ...cyLabels]),
+    ...new Set(
+      [periodRow.label, breakupPrevLabel, ...fyLabels, ...cyLabels].filter(Boolean)
+    ),
   ];
   const breakupLoadLevel = breakupGeoLevel === 'block' ? 'block' : 'district';
 
@@ -599,6 +602,13 @@ async function buildIndicatorBreakup({
     }
     const monthRows = scoped.filter((r) => r.period === periodRow.label);
     const monthly = avg(monthRows.map((r) => num(r.value)));
+    const previousMonthly = breakupPrevLabel
+      ? avg(
+          scoped
+            .filter((r) => r.period === breakupPrevLabel)
+            .map((r) => num(r.value))
+        )
+      : null;
     const up_avg =
       upAvgByCode.has(bi.code) ? upAvgByCode.get(bi.code) : null;
     const best = bestByCode.has(bi.code) ? bestByCode.get(bi.code) : null;
@@ -654,6 +664,7 @@ async function buildIndicatorBreakup({
         : null,
       monthly: rawScore(monthly),
       monthly_display: formatValue(monthly, bi.unit),
+      previous_monthly: rawScore(previousMonthly),
       fy: rawScore(fy),
       fy_display: formatValue(fy, bi.unit),
     };
@@ -692,6 +703,7 @@ function mapBreakupToIndicators(indicator_breakup) {
     lower_is_better: Boolean(r.is_negative || r.lower_is_better),
     value: r.monthly,
     display_value: r.monthly_display,
+    previous_value: r.previous_monthly ?? null,
     up_avg: r.up_avg,
     up_avg_display: r.up_avg_display,
     best_perf: r.best_perf,

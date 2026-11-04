@@ -82,7 +82,7 @@ async function resolvePeriod(period) {
   return resolveOutcomePeriod(period);
 }
 
-function pickBestWorstIndicators(indicators, n = 3) {
+function pickBestWorstIndicators(indicators, n = 3, previousByCode = new Map()) {
   const scored = indicators
     .filter((i) => i.value != null)
     .map((i) => ({
@@ -98,6 +98,8 @@ function pickBestWorstIndicators(indicators, n = 3) {
     unit: i.unit,
     value: i.value,
     display_value: i.unit === 'percent' ? `${i.value}%` : i.value,
+    previous_value: previousByCode.get(i.code) ?? null,
+    is_negative: !!i.lower_is_better,
     sentiment,
   });
   return {
@@ -623,7 +625,12 @@ async function getExecutiveSummary({
   const bottom_3 = [...withMeta].sort((a, b) => b.rank - a.rank).slice(0, topN).reverse();
 
   const indicatorAvgs = await loadStatewideIndicatorAvgs(periodRow.label);
-  const { best_indicators, worst_indicators } = pickBestWorstIndicators(indicatorAvgs, topN);
+  const prevIndicatorAvgs = prevLabel ? await loadStatewideIndicatorAvgs(prevLabel) : [];
+  const { best_indicators, worst_indicators } = pickBestWorstIndicators(
+    indicatorAvgs,
+    topN,
+    new Map(prevIndicatorAvgs.map((i) => [i.code, i.value]))
+  );
 
   const narrative = buildNarrative({
     bestIndicators: best_indicators,
