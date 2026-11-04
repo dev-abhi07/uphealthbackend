@@ -580,6 +580,18 @@ async function getRankInsights({ period, mode = 'division', scope = null } = {})
   };
 }
 
+async function loadActiveMatrixIndicators() {
+  const { rows } = await query(
+    `
+    SELECT code, short_name, name, unit, is_negative, sno
+    FROM indicator
+    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
+    ORDER BY sno NULLS LAST, code
+    `
+  );
+  return rows;
+}
+
 async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
   const labels = prevLabel ? [currentLabel, prevLabel] : [currentLabel];
   const out = [];
@@ -604,14 +616,7 @@ async function loadMatrixData(geoLevel, currentLabel, prevLabel) {
     });
   }
 
-  const { rows: inds } = await query(
-    `
-    SELECT code, short_name, name, unit, is_negative, sno
-    FROM indicator
-    WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
-    ORDER BY sno NULLS LAST, code
-    `
-  );
+  const inds = await loadActiveMatrixIndicators();
   for (const ind of inds) {
     const code = String(ind.code || '').toUpperCase();
     const isNegative =
@@ -715,6 +720,21 @@ async function getIndicatorPerformanceMatrix({
   const areaMap = new Map();
   const indicatorMap = new Map();
   const valueMap = new Map();
+
+  // Every active indicator gets a row (same set as statewide), even when the
+  // scoped geo level (e.g. blocks for district login) has no values for it.
+  for (const ind of await loadActiveMatrixIndicators()) {
+    const code = String(ind.code || '').toUpperCase();
+    indicatorMap.set(ind.code, {
+      id: ind.code,
+      code: ind.code,
+      name: (ind.short_name || ind.name || ind.code).toUpperCase(),
+      kind: matrixKind(ind.unit),
+      lowerIsBetter:
+        !!ind.is_negative || code === 'IND010' || code === 'IND011',
+      sortOrder: ind.sno != null ? Number(ind.sno) : 999,
+    });
+  }
 
   rows.forEach((r) => {
     const areaId = matrixAreaId(r);
