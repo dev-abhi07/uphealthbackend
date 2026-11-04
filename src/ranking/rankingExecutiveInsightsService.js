@@ -11,6 +11,7 @@ const {
   loadIndicatorByPeriod,
 } = require('../outcome/outcomeRankingQueries');
 const { normalizeName } = require('../services/geoScopeService');
+const { indicatorSupportsBlockLevel } = require('./rankingRegistry');
 
 function num(v) {
   if (v === null || v === undefined) return null;
@@ -583,7 +584,7 @@ async function getRankInsights({ period, mode = 'division', scope = null } = {})
 async function loadActiveMatrixIndicators() {
   const { rows } = await query(
     `
-    SELECT code, short_name, name, unit, is_negative, sno
+    SELECT code, short_name, name, unit, is_negative, sno, ranking_level
     FROM indicator
     WHERE is_active = TRUE AND code ~ '^IND\\d{3}$'
     ORDER BY sno NULLS LAST, code
@@ -722,8 +723,15 @@ async function getIndicatorPerformanceMatrix({
   const valueMap = new Map();
 
   // Every active indicator gets a row (same set as statewide), even when the
-  // scoped geo level (e.g. blocks for district login) has no values for it.
-  for (const ind of await loadActiveMatrixIndicators()) {
+  // scoped geo level has no values for it. Block columns (district login)
+  // skip district-only indicators.
+  let matrixIndicators = await loadActiveMatrixIndicators();
+  if (contentGeo === 'block') {
+    matrixIndicators = matrixIndicators.filter(indicatorSupportsBlockLevel);
+    const blockCodes = new Set(matrixIndicators.map((ind) => ind.code));
+    rows = rows.filter((r) => r.is_composite || blockCodes.has(r.code));
+  }
+  for (const ind of matrixIndicators) {
     const code = String(ind.code || '').toUpperCase();
     indicatorMap.set(ind.code, {
       id: ind.code,
