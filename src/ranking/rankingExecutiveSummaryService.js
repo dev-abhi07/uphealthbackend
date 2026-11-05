@@ -114,7 +114,8 @@ function formatIndicatorScore(ind) {
     return String(ind.display_value);
   }
   if (ind.value == null) return null;
-  return ind.unit === 'percent' ? `${ind.value}%` : String(ind.value);
+  if (ind.unit === 'percent') return `${ind.value}%`;
+  return String(ind.value);
 }
 
 function formatGeoList(areas, levelLabel) {
