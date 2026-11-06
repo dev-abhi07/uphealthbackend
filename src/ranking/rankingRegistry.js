@@ -20,6 +20,10 @@ const CALENDAR_YEAR_INDICATORS = new Set([
  * FY column = last available month in FY Apr→selected.
  */
 const FINANCIAL_YEAR_INDICATORS = new Set([
+  'IND025',
+  'IND029',
+  'IND033',
+  'IND037',
   'IND023',
   'IND024',
   'IND028',
