@@ -37,4 +37,7 @@ jobs:
 
             npm install
 
+            # Create missing tables/indexes (idempotent: IF NOT EXISTS)
+            npm run db:schema
+
             pm2 restart upranking

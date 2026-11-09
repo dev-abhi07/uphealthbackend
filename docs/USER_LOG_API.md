@@ -2,10 +2,15 @@
 
 Tracks **logged-in users**: page access, dashboard views, UI actions, and time spent.
 
-Apply schema once:
+Apply schema once (or via deploy):
 
 ```bash
+# Preferred — applies 030–033 (activity log, session, indexes)
+npm run db:schema
+
+# Or manually:
 psql -U postgres -d up_health_dashboard -f database/030_user_activity_log.sql
+psql -U postgres -d up_health_dashboard -f database/031_user_activity_api_hit.sql
 ```
 
 ---
