@@ -83,6 +83,13 @@ async function upsertDistrictOutcomeRows(rows, { month, year, period_label, sour
     );
 
     await client.query('COMMIT');
+    // Monthly (or manual) write — drop all ranking API response caches
+    try {
+      const { bumpCacheGeneration } = require('../cache/rankingResponseCache');
+      await bumpCacheGeneration(`district-outcome-${label}`);
+    } catch (_) {
+      /* cache is best-effort */
+    }
     return { district_count: rows.length, value_count: valueCount };
   } catch (e) {
     await client.query('ROLLBACK');

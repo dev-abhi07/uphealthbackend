@@ -29,4 +29,19 @@ module.exports = {
     timeoutMs: Number(process.env.OUTCOME_API_TIMEOUT_MS) || 8000,
     apiKey: process.env.OUTCOME_API_KEY || '',
   },
+  /**
+   * Ranking API response cache (Redis + in-memory fallback).
+   * Fresh monthly sync bumps the generation and drops all cached payloads.
+   */
+  redis: {
+    enabled: String(process.env.REDIS_ENABLED || 'true').toLowerCase() !== 'false',
+    cacheEnabled:
+      String(process.env.RANKING_RESPONSE_CACHE || 'true').toLowerCase() !== 'false',
+    host: process.env.REDIS_HOST || '127.0.0.1',
+    port: Number(process.env.REDIS_PORT) || 6379,
+    password: process.env.REDIS_PASSWORD || '',
+    db: Number(process.env.REDIS_DB) || 0,
+    /** Default 30 days — data only refreshes on monthly sync. */
+    ttlSeconds: Number(process.env.RANKING_CACHE_TTL_SECONDS) || 60 * 60 * 24 * 30,
+  },
 };

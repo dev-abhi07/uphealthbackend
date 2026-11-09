@@ -21,6 +21,12 @@ Sync district: `POST /api/ranking/outcome/district/sync?month=7&year=2026`
 Sync block: `POST /api/ranking/outcome/block/sync?month=7&year=2026`  
 Auth to upstream: Basic (`USER_NAME_UPDSUPERADMIN` / `PASSWORD_UPDSU`)
 
+### Response cache (Redis)
+
+Heavy `GET /api/ranking/*` JSON responses are cached (Redis, with in-memory fallback).  
+Cache keys include the request query + user geo scope. TTL defaults to 30 days.  
+Any successful district/block outcome upsert (Sync Month / ingest) bumps the cache generation and clears prior entries so dashboards reload fresh data.
+
 Legacy Excel import (`POST /api/ranking/import`) remains for historical files but is not served by ranking/dashboard plot endpoints.
 
 ## Endpoints

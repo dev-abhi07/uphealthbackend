@@ -104,6 +104,13 @@ async function upsertBlockOutcomeRows(rows, { month, year, period_label, source 
     );
 
     await client.query('COMMIT');
+    // Monthly (or manual) write — drop all ranking API response caches
+    try {
+      const { bumpCacheGeneration } = require('../cache/rankingResponseCache');
+      await bumpCacheGeneration(`block-outcome-${label}`);
+    } catch (_) {
+      /* cache is best-effort */
+    }
     return { block_count: rows.length, value_count: valueCount };
   } catch (e) {
     await client.query('ROLLBACK');

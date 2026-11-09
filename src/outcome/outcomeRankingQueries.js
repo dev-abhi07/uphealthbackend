@@ -355,6 +355,264 @@ async function loadIndicatorByPeriod({
   return out;
 }
 
+/**
+ * Load ALL IND### values for many periods in one query (analytics batch path).
+ * Skips per-period ranking (analytics only needs values for series / UP avg / best).
+ */
+async function loadAllIndicatorsByPeriod({
+  geoLevel,
+  periodLabels,
+} = {}) {
+  if (!periodLabels || !periodLabels.length) return [];
+  const level =
+    geoLevel === 'division' ? 'division' : geoLevel === 'block' ? 'block' : 'district';
+
+  if (level === 'block') {
+    const { rows } = await query(
+      `
+      SELECT v.period_label AS period,
+             upper(v.indicator_code) AS indicator_code,
+             COALESCE(b.name, o.block_name) AS name,
+             v.value::float AS value,
+             v.block_lgd,
+             v.district_lgd,
+             COALESCE(d.name, o.district_name) AS district_name
+      FROM indicator_outcome_block_value v
+      LEFT JOIN indicator_outcome_block o
+        ON o.year = v.year AND o.month = v.month AND o.block_lgd = v.block_lgd
+      LEFT JOIN block b ON b.lgd_code::text = v.block_lgd::text
+      LEFT JOIN district d ON d.lgd_code::text = v.district_lgd::text
+      WHERE v.period_label = ANY($1::text[])
+        AND v.indicator_code ~ '^IND\\d{3}$'
+        AND v.value IS NOT NULL
+      `,
+      [periodLabels]
+    );
+    return rows.map((r) => ({
+      period: r.period,
+      name: r.name,
+      value: num(r.value),
+      indicator_code: String(r.indicator_code || '').toUpperCase(),
+      block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+      district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+      district_name: r.district_name || null,
+    }));
+  }
+
+  if (level === 'district') {
+    const { rows } = await query(
+      `
+      SELECT v.period_label AS period,
+             upper(v.indicator_code) AS indicator_code,
+             COALESCE(d.name, o.district_name) AS name,
+             v.value::float AS value,
+             v.district_lgd
+      FROM indicator_outcome_district_value v
+      LEFT JOIN indicator_outcome_district o
+        ON o.year = v.year AND o.month = v.month AND o.district_lgd = v.district_lgd
+      LEFT JOIN district d ON d.lgd_code::text = v.district_lgd::text
+      WHERE v.period_label = ANY($1::text[])
+        AND v.indicator_code ~ '^IND\\d{3}$'
+        AND v.value IS NOT NULL
+      `,
+      [periodLabels]
+    );
+    return rows.map((r) => ({
+      period: r.period,
+      name: r.name,
+      value: num(r.value),
+      indicator_code: String(r.indicator_code || '').toUpperCase(),
+      district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+    }));
+  }
+
+  const { rows } = await query(
+    `
+    SELECT v.period_label AS period,
+           upper(v.indicator_code) AS indicator_code,
+           div.name AS name,
+           ROUND(AVG(v.value)::numeric, 8)::float AS value,
+           div.id AS division_id
+    FROM indicator_outcome_district_value v
+    JOIN district d ON d.lgd_code::text = v.district_lgd::text
+    JOIN division div ON div.id = d.division_id
+    WHERE v.period_label = ANY($1::text[])
+      AND v.indicator_code ~ '^IND\\d{3}$'
+      AND v.value IS NOT NULL
+    GROUP BY v.period_label, v.indicator_code, div.id, div.name
+    `,
+    [periodLabels]
+  );
+  return rows.map((r) => ({
+    period: r.period,
+    name: r.name,
+    value: num(r.value),
+    indicator_code: String(r.indicator_code || '').toUpperCase(),
+    division_id: r.division_id != null ? Number(r.division_id) : null,
+  }));
+}
+
+/**
+ * Block analytics helper:
+ * - seriesRows: values for one selected block only
+ * - bestByCode: Map<code, Map<period, {value, name}>> statewide best per period
+ */
+async function loadBlockIndicatorSeriesAndBest({
+  periodLabels,
+  blockLgd = null,
+  blockName = null,
+  districtName = null,
+  negativeCodes = [],
+} = {}) {
+  if (!periodLabels || !periodLabels.length) {
+    return { seriesRows: [], bestByCode: new Map() };
+  }
+  const negSet = new Set(
+    (negativeCodes || []).map((c) => String(c).toUpperCase())
+  );
+
+  const wantLgd =
+    blockLgd != null && Number.isFinite(Number(blockLgd))
+      ? Number(blockLgd)
+      : null;
+
+  const seriesPromise = (async () => {
+    if (wantLgd != null) {
+      const { rows } = await query(
+        `
+        SELECT v.period_label AS period,
+               upper(v.indicator_code) AS indicator_code,
+               COALESCE(b.name, o.block_name) AS name,
+               v.value::float AS value,
+               v.block_lgd,
+               v.district_lgd,
+               COALESCE(d.name, o.district_name) AS district_name
+        FROM indicator_outcome_block_value v
+        LEFT JOIN indicator_outcome_block o
+          ON o.year = v.year AND o.month = v.month AND o.block_lgd = v.block_lgd
+        LEFT JOIN block b ON b.lgd_code::text = v.block_lgd::text
+        LEFT JOIN district d ON d.lgd_code::text = v.district_lgd::text
+        WHERE v.period_label = ANY($1::text[])
+          AND v.block_lgd = $2
+          AND v.indicator_code ~ '^IND\\d{3}$'
+          AND v.value IS NOT NULL
+        `,
+        [periodLabels, wantLgd]
+      );
+      return rows.map((r) => ({
+        period: r.period,
+        name: r.name,
+        value: num(r.value),
+        indicator_code: String(r.indicator_code || '').toUpperCase(),
+        block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+        district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+        district_name: r.district_name || null,
+      }));
+    }
+
+    // Name fallback (no LGD) — still scoped by district when possible
+    const params = [periodLabels];
+    let sql = `
+      SELECT v.period_label AS period,
+             upper(v.indicator_code) AS indicator_code,
+             COALESCE(b.name, o.block_name) AS name,
+             v.value::float AS value,
+             v.block_lgd,
+             v.district_lgd,
+             COALESCE(d.name, o.district_name) AS district_name
+      FROM indicator_outcome_block_value v
+      LEFT JOIN indicator_outcome_block o
+        ON o.year = v.year AND o.month = v.month AND o.block_lgd = v.block_lgd
+      LEFT JOIN block b ON b.lgd_code::text = v.block_lgd::text
+      LEFT JOIN district d ON d.lgd_code::text = v.district_lgd::text
+      WHERE v.period_label = ANY($1::text[])
+        AND v.indicator_code ~ '^IND\\d{3}$'
+        AND v.value IS NOT NULL
+        AND (
+          lower(COALESCE(b.name, o.block_name)) = lower($2)
+          OR replace(lower(COALESCE(b.name, o.block_name)), ' ', '-') = lower($3)
+        )
+    `;
+    params.push(String(blockName || ''), String(blockName || '').replace(/\s+/g, '-'));
+    if (districtName) {
+      params.push(String(districtName));
+      sql += ` AND lower(COALESCE(d.name, o.district_name)) = lower($${params.length})`;
+    }
+    const { rows } = await query(sql, params);
+    return rows.map((r) => ({
+      period: r.period,
+      name: r.name,
+      value: num(r.value),
+      indicator_code: String(r.indicator_code || '').toUpperCase(),
+      block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+      district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+      district_name: r.district_name || null,
+    }));
+  })();
+
+  const negList = [...negSet];
+  const bestPromise = (async () => {
+    // No master joins — return winners only (~indicators × months), then name-resolve.
+    const [pos, neg, names] = await Promise.all([
+      query(
+        `
+        SELECT DISTINCT ON (v.period_label, upper(v.indicator_code))
+               v.period_label AS period,
+               upper(v.indicator_code) AS indicator_code,
+               v.value::float AS value,
+               v.block_lgd
+        FROM indicator_outcome_block_value v
+        WHERE v.period_label = ANY($1::text[])
+          AND v.indicator_code ~ '^IND\\d{3}$'
+          AND v.value IS NOT NULL
+          AND (
+            cardinality($2::text[]) = 0
+            OR NOT (upper(v.indicator_code) = ANY($2::text[]))
+          )
+        ORDER BY v.period_label, upper(v.indicator_code), v.value DESC NULLS LAST
+        `,
+        [periodLabels, negList]
+      ),
+      negList.length
+        ? query(
+            `
+            SELECT DISTINCT ON (v.period_label, upper(v.indicator_code))
+                   v.period_label AS period,
+                   upper(v.indicator_code) AS indicator_code,
+                   v.value::float AS value,
+                   v.block_lgd
+            FROM indicator_outcome_block_value v
+            WHERE v.period_label = ANY($1::text[])
+              AND v.indicator_code ~ '^IND\\d{3}$'
+              AND v.value IS NOT NULL
+              AND upper(v.indicator_code) = ANY($2::text[])
+            ORDER BY v.period_label, upper(v.indicator_code), v.value ASC NULLS LAST
+            `,
+            [periodLabels, negList]
+          )
+        : Promise.resolve({ rows: [] }),
+      query(`SELECT lgd_code::text AS lgd, name FROM block WHERE is_active = TRUE`),
+    ]);
+
+    const nameByLgd = new Map(
+      (names.rows || []).map((r) => [String(r.lgd), r.name])
+    );
+    const bestByCode = new Map();
+    for (const r of [...(pos.rows || []), ...(neg.rows || [])]) {
+      const code = String(r.indicator_code || '').toUpperCase();
+      if (!bestByCode.has(code)) bestByCode.set(code, new Map());
+      bestByCode.get(code).set(r.period, {
+        value: num(r.value),
+        name: nameByLgd.get(String(r.block_lgd)) || String(r.block_lgd || ''),
+      });
+    }
+    return bestByCode;
+  })();
+
+  const [seriesRows, bestByCode] = await Promise.all([seriesPromise, bestPromise]);
+  return { seriesRows, bestByCode };
+}
+
 async function loadStatewideIndicatorAvgs(periodLabel) {
   const { rows } = await query(
     `
@@ -444,6 +702,8 @@ module.exports = {
   getDivisionIndicatorRows,
   loadCompositeByPeriod,
   loadIndicatorByPeriod,
+  loadAllIndicatorsByPeriod,
+  loadBlockIndicatorSeriesAndBest,
   loadStatewideIndicatorAvgs,
   resolveMasterIndicator,
 };

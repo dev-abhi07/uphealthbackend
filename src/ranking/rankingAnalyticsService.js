@@ -23,6 +23,8 @@ const {
   listOutcomePeriodLabels,
   loadCompositeByPeriod,
   loadIndicatorByPeriod,
+  loadAllIndicatorsByPeriod,
+  loadBlockIndicatorSeriesAndBest,
 } = require('../outcome/outcomeRankingQueries');
 
 /**
@@ -993,20 +995,317 @@ async function getAnalyticsDashboard({
     return by;
   }
 
-  async function buildMetric(ind) {
-    const rows = await loadIndicatorValues({
-      indicatorCode: ind.code,
-      geoLevel: scope.geoLevel === 'state' ? 'state' : scope.geoLevel,
+  // ---- Batch preload (few SQL queries) instead of 1–3 queries per indicator ----
+  const needBlockPool = scope.geoLevel === 'block';
+  const needDivisionRows = scope.geoLevel === 'division';
+
+  const preloadJobs = [
+    loadCompositeByPeriod('district', queryMonths),
+    loadAllIndicatorsByPeriod({
+      geoLevel: 'district',
       periodLabels: queryMonths,
-      geoName: scope.geoLevel === 'state' ? null : scope.geoName,
-      districtName: scope.districtName || null,
-      districtLgd: scope.districtLgd ?? null,
-      blockLgd: scope.blockLgd ?? null,
-      isNegative: !!ind.is_negative,
+    }),
+  ];
+  if (needDivisionRows) {
+    preloadJobs.push(
+      loadCompositeByPeriod('division', queryMonths),
+      loadAllIndicatorsByPeriod({
+        geoLevel: 'division',
+        periodLabels: queryMonths,
+      })
+    );
+  } else {
+    preloadJobs.push(Promise.resolve([]), Promise.resolve([]));
+  }
+  // Block scope: do NOT pull every block statewide into Node.
+  // Series = selected block only; Best Perf = SQL min/max per period.
+  let blockCompositeRows = [];
+  let blockIndicatorRows = [];
+  let blockBestCompositeByPeriod = new Map(); // period → {value, name}
+  let blockBestIndByCode = new Map(); // code → Map(period → {value, name})
+
+  if (needBlockPool) {
+    const wantLgd =
+      scope.blockLgd != null && Number.isFinite(Number(scope.blockLgd))
+        ? Number(scope.blockLgd)
+        : null;
+    preloadJobs.push(
+      Promise.all([
+        // Selected block composite series only
+        wantLgd != null
+          ? query(
+              `
+              SELECT o.period_label AS period,
+                     COALESCE(b.name, o.block_name) AS name,
+                     o.index_outcome::float AS value,
+                     o.block_lgd,
+                     o.district_lgd,
+                     COALESCE(d.name, o.district_name) AS district_name
+              FROM indicator_outcome_block o
+              LEFT JOIN block b ON b.lgd_code::text = o.block_lgd::text
+              LEFT JOIN district d ON d.lgd_code::text = o.district_lgd::text
+              WHERE o.period_label = ANY($1::text[])
+                AND o.block_lgd = $2
+                AND o.index_outcome IS NOT NULL
+              `,
+              [queryMonths, wantLgd]
+            ).then(({ rows }) =>
+              rows.map((r) => ({
+                period: r.period,
+                name: r.name,
+                value: num(r.value),
+                block_lgd: r.block_lgd != null ? Number(r.block_lgd) : null,
+                district_lgd:
+                  r.district_lgd != null ? Number(r.district_lgd) : null,
+                district_name: r.district_name || null,
+              }))
+            )
+          : loadCompositeByPeriod('block', queryMonths).then((rows) =>
+              rows.filter((r) =>
+                analyticsGeoNameMatches(r.name, scope.geoName, {
+                  level: 'block',
+                })
+              )
+            ),
+        // Statewide best composite per month (no full transfer)
+        query(
+          `
+          SELECT DISTINCT ON (o.period_label)
+                 o.period_label AS period,
+                 o.index_outcome::float AS value,
+                 COALESCE(b.name, o.block_name) AS name
+          FROM indicator_outcome_block o
+          LEFT JOIN block b ON b.lgd_code::text = o.block_lgd::text
+          WHERE o.period_label = ANY($1::text[])
+            AND o.index_outcome IS NOT NULL
+          ORDER BY o.period_label, o.index_outcome DESC NULLS LAST
+          `,
+          [queryMonths]
+        ).then(({ rows }) => {
+          for (const r of rows) {
+            blockBestCompositeByPeriod.set(r.period, {
+              value: num(r.value),
+              name: r.name,
+            });
+          }
+        }),
+      ]).then(([series]) => series),
+      loadBlockIndicatorSeriesAndBest({
+        periodLabels: queryMonths,
+        blockLgd: scope.blockLgd,
+        blockName: scope.geoName,
+        districtName: scope.districtName,
+        negativeCodes: nonComposite
+          .filter((i) => i.is_negative)
+          .map((i) => String(i.code).toUpperCase()),
+      })
+    );
+  } else {
+    preloadJobs.push(
+      Promise.resolve([]),
+      Promise.resolve({ seriesRows: [], bestByCode: new Map() })
+    );
+  }
+
+  const [
+    districtCompositeRows,
+    districtIndicatorRows,
+    divisionCompositeRows,
+    divisionIndicatorRows,
+    blockCompositeFiltered,
+    blockIndBundle,
+  ] = await Promise.all(preloadJobs);
+
+  if (needBlockPool) {
+    blockCompositeRows = blockCompositeFiltered || [];
+    blockIndicatorRows = blockIndBundle?.seriesRows || [];
+    blockBestIndByCode = blockIndBundle?.bestByCode || new Map();
+  }
+
+  function indexByCode(rows) {
+    const map = new Map();
+    for (const r of rows || []) {
+      const code = String(r.indicator_code || 'RANK_COMPOSITE').toUpperCase();
+      if (!map.has(code)) map.set(code, []);
+      map.get(code).push(r);
+    }
+    return map;
+  }
+
+  const districtIndByCode = indexByCode(districtIndicatorRows);
+  const divisionIndByCode = indexByCode(divisionIndicatorRows);
+  const blockIndByCode = indexByCode(blockIndicatorRows);
+
+  function filterScopeRows(rows, { level, geoName, districtName, districtLgd, blockLgd }) {
+    if (!geoName) return rows || [];
+    const wantBlockLgd =
+      blockLgd != null && Number.isFinite(Number(blockLgd))
+        ? Number(blockLgd)
+        : null;
+    const wantDistrictLgd =
+      level === 'district' &&
+      districtLgd != null &&
+      Number.isFinite(Number(districtLgd))
+        ? Number(districtLgd)
+        : null;
+    return (rows || []).filter((r) => {
+      if (level === 'block') {
+        if (wantBlockLgd != null && r.block_lgd != null) {
+          return Number(r.block_lgd) === wantBlockLgd;
+        }
+        if (
+          !analyticsGeoNameMatches(r.name, geoName, { level: 'block' })
+        ) {
+          return false;
+        }
+        if (districtName) {
+          const dn = normalizeGeoName(districtName).toLowerCase();
+          const rd = normalizeGeoName(r.district_name || '').toLowerCase();
+          if (rd && dn && rd !== dn) return false;
+        }
+        return true;
+      }
+      if (wantDistrictLgd != null && r.district_lgd != null) {
+        return Number(r.district_lgd) === wantDistrictLgd;
+      }
+      return analyticsGeoNameMatches(r.name, geoName, { level });
     });
+  }
+
+  function rowsForIndicator(ind) {
+    const code = String(ind.code || '').toUpperCase();
+    const isComposite = !!ind.is_composite || code === 'RANK_COMPOSITE';
+
+    if (scope.geoLevel === 'state') {
+      const source = isComposite
+        ? districtCompositeRows
+        : districtIndByCode.get(code) || [];
+      const byPeriod = new Map();
+      for (const r of source) {
+        if (!byPeriod.has(r.period)) byPeriod.set(r.period, []);
+        byPeriod.get(r.period).push(r.value);
+      }
+      return [...byPeriod.entries()].map(([period, vals]) => ({
+        period,
+        value: avg(vals),
+        geo_name: 'Uttar Pradesh',
+      }));
+    }
+
+    if (scope.geoLevel === 'block') {
+      const source = isComposite
+        ? blockCompositeRows
+        : blockIndByCode.get(code) || [];
+      let filtered = filterScopeRows(source, {
+        level: 'block',
+        geoName: scope.geoName,
+        districtName: scope.districtName,
+        blockLgd: scope.blockLgd,
+      });
+      const hasValue = filtered.some((r) => r.value != null);
+      if (!hasValue && scope.districtName) {
+        const distSource = isComposite
+          ? districtCompositeRows
+          : districtIndByCode.get(code) || [];
+        filtered = filterScopeRows(distSource, {
+          level: 'district',
+          geoName: scope.districtName,
+          districtLgd: scope.districtLgd,
+        });
+        return filtered.map((r) => ({
+          period: r.period,
+          value: r.value,
+          geo_name: scope.geoName || r.name,
+          district_name: scope.districtName,
+          value_source: 'district_fallback',
+        }));
+      }
+      return filtered.map((r) => ({
+        period: r.period,
+        value: r.value,
+        geo_name: r.name,
+        district_name: r.district_name || null,
+      }));
+    }
+
+    if (scope.geoLevel === 'division') {
+      const source = isComposite
+        ? divisionCompositeRows
+        : divisionIndByCode.get(code) || [];
+      const filtered = filterScopeRows(source, {
+        level: 'division',
+        geoName: scope.geoName,
+      });
+      return filtered.map((r) => ({
+        period: r.period,
+        value: r.value,
+        rank: r.rank,
+        geo_name: r.name,
+      }));
+    }
+
+    // district
+    const source = isComposite
+      ? districtCompositeRows
+      : districtIndByCode.get(code) || [];
+    const filtered = filterScopeRows(source, {
+      level: 'district',
+      geoName: scope.geoName,
+      districtLgd: scope.districtLgd,
+    });
+    return filtered.map((r) => ({
+      period: r.period,
+      value: r.value,
+      rank: r.rank,
+      geo_name: r.name,
+    }));
+  }
+
+  function benchmarkPoolsFor(ind) {
+    const code = String(ind.code || '').toUpperCase();
+    const isComposite = !!ind.is_composite || code === 'RANK_COMPOSITE';
+    const mapRows = (rows) =>
+      (rows || []).map((r) => ({
+        period: r.period,
+        geo_name: r.name,
+        district_name: r.district_name || null,
+        district_lgd: r.district_lgd != null ? Number(r.district_lgd) : null,
+        value: r.value,
+      }));
+
+    const districtPool = mapRows(
+      isComposite
+        ? districtCompositeRows
+        : districtIndByCode.get(code) || []
+    );
+
+    if (scope.geoLevel === 'block') {
+      // UP Avg from districts; Best from precomputed statewide block winners
+      const bestMap = isComposite
+        ? blockBestCompositeByPeriod
+        : blockBestIndByCode.get(code) || new Map();
+      const bestPool = [...bestMap.entries()].map(([period, hit]) => ({
+        period,
+        geo_name: hit.name,
+        value: hit.value,
+      }));
+      return {
+        pool: bestPool,
+        distAvgPool: districtPool,
+        bestAlreadyResolved: true,
+      };
+    }
+
+    if (districtPool.some((r) => r.value != null)) {
+      return { pool: districtPool };
+    }
+    return { pool: districtPool };
+  }
+
+  function buildMetric(ind) {
+    const rows = rowsForIndicator(ind);
     const monthMap = new Map();
     for (const r of rows) {
-      // Same geo should not collide after exact match; keep first non-null
       if (!monthMap.has(r.period)) monthMap.set(r.period, r.value);
       else if (monthMap.get(r.period) == null && r.value != null) {
         monthMap.set(r.period, r.value);
@@ -1023,18 +1322,8 @@ async function getAnalyticsDashboard({
     let best_perf_series = null;
     let best_perf_name = null;
 
-    /**
-     * UP AVG + BEST PERF — same rule as Table View:
-     * UP Avg = statewide district average (matches left-table UP);
-     * block Best Perf = best among all blocks statewide.
-     */
     if (wantUp || wantBest) {
-      const { pool, distAvgPool } = await loadBenchmarkPool({
-        indicatorCode: ind.code,
-        periodLabels: queryMonths,
-        isNegative: !!ind.is_negative,
-        scope,
-      });
+      const { pool, distAvgPool, bestAlreadyResolved } = benchmarkPoolsFor(ind);
       const upPool =
         Array.isArray(distAvgPool) && distAvgPool.length ? distAvgPool : pool;
       const upMonth = new Map();
@@ -1047,20 +1336,28 @@ async function getAnalyticsDashboard({
         if (wantUp) upMonth.set(pl, avg(upSlice.map((r) => r.value)));
         const slice = pool.filter((r) => r.period === pl && r.value != null);
         if (wantBest && slice.length) {
-          let best = null;
-          for (const r of slice) {
-            const v = num(r.value);
-            if (v == null) continue;
-            if (
-              !best ||
-              (lowerIsBetter ? v < best.value : v > best.value)
-            ) {
-              best = { name: r.geo_name, value: v };
+          if (bestAlreadyResolved) {
+            const hit = slice[0];
+            if (hit && hit.value != null) {
+              bestMonth.set(pl, hit.value);
+              bestNameMonth.set(pl, hit.geo_name);
             }
-          }
-          if (best) {
-            bestMonth.set(pl, best.value);
-            bestNameMonth.set(pl, best.name);
+          } else {
+            let best = null;
+            for (const r of slice) {
+              const v = num(r.value);
+              if (v == null) continue;
+              if (
+                !best ||
+                (lowerIsBetter ? v < best.value : v > best.value)
+              ) {
+                best = { name: r.geo_name, value: v };
+              }
+            }
+            if (best) {
+              bestMonth.set(pl, best.value);
+              bestNameMonth.set(pl, best.name);
+            }
           }
         }
       }
@@ -1077,7 +1374,6 @@ async function getAnalyticsDashboard({
           aggregateAxis(bestMonth, { lastAvailable: lastAvail }),
           (k) => axisDisplay.get(k) || k
         );
-        // Prefer best name from last axis period that has data
         for (let i = queryMonths.length - 1; i >= 0; i -= 1) {
           if (bestNameMonth.has(queryMonths[i])) {
             best_perf_name = bestNameMonth.get(queryMonths[i]);
@@ -1115,12 +1411,10 @@ async function getAnalyticsDashboard({
       type: typeKey,
       indicator_type: typeKey,
       type_label: typeKey ? typeMeta(typeKey).label : null,
-      // Excel Domain bifurcation (same as map SUMMARY)
       domain: resolvedDomain.key,
       domain_label: resolvedDomain.label,
       domain_slug: ind.domain || g.domain || null,
       sort_order: ind.sort_order != null ? Number(ind.sort_order) : null,
-      // Exact Excel values (2 dp) — Agra Jun INST_DEL=79.88, DH=36.16, etc.
       from_value: round(from_value),
       from_display: formatValue(from_value, ind.unit),
       from_bar_label: formatBarLabel(from_value, ind.unit),
@@ -1131,14 +1425,13 @@ async function getAnalyticsDashboard({
       up_avg_series,
       best_perf_series,
       best_perf_name,
-      // Screenshot trend panel (bars + UP Average line + Best Performance band)
       chart,
     };
   }
 
   let composite = null;
   if (compositeInd) {
-    const c = await buildMetric(compositeInd);
+    const c = buildMetric(compositeInd);
     const lastAvail = [...(c.series || [])].reverse().find((p) => p.value != null);
     composite = {
       score: lastAvail ? lastAvail.value : c.to_value,
@@ -1158,7 +1451,7 @@ async function getAnalyticsDashboard({
 
   let indicatorRows = [];
   for (const ind of nonComposite) {
-    indicatorRows.push(await buildMetric(ind));
+    indicatorRows.push(buildMetric(ind));
   }
   // Hide indicators with no data in range (screenshot only shows populated rows)
   indicatorRows = indicatorRows.filter((r) =>

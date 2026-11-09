@@ -2,6 +2,9 @@ const express = require('express');
 const multer = require('multer');
 const { authenticate } = require('../middleware/auth');
 const rankingController = require('../ranking/rankingController');
+const {
+  rankingResponseCacheMiddleware,
+} = require('../cache/rankingResponseCache');
 
 const router = express.Router();
 const upload = multer({
@@ -10,6 +13,8 @@ const upload = multer({
 });
 
 router.use(authenticate);
+// Cache heavy ranking GET payloads until the next monthly outcome sync.
+router.use(rankingResponseCacheMiddleware);
 
 router.get('/periods', rankingController.periods);
 router.get('/geo-options', rankingController.geoOptions);
