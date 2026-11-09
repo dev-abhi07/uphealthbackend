@@ -8,6 +8,7 @@
  * (42 districts / 108 blocks). Matched primarily by LGD code.
  */
 
+
 const { normalizeGeoName } = require('./rankingNameNormalize');
 const aspirationalData = require('./aspirationalGeoData.json');
 
