@@ -9,7 +9,9 @@ const KEY_PREFIX = 'uphealth:ranking:resp';
 const memory = new Map();
 let memoryGen = 1;
 
-const MAX_MEMORY_ENTRIES = 400;
+const MAX_MEMORY_ENTRIES = 80;
+/** Skip in-memory store for huge payloads (Redis still used when available). */
+const MAX_MEMORY_VALUE_BYTES = 1.5 * 1024 * 1024;
 
 function enabled() {
   return config.redis?.cacheEnabled !== false;
@@ -38,20 +40,36 @@ function hash(parts) {
 
 /**
  * Scope fingerprint so division/district/block logins never share a state-admin cache entry.
+ * Statewide admins share one fingerprint (same payload) for better hit rate.
  */
 function scopeFingerprint(user) {
   if (!user) return 'anon';
-  const roles = Array.isArray(user.roles) ? [...user.roles].sort().join(',') : '';
+  const rolesArr = Array.isArray(user.roles) ? [...user.roles].map(String).sort() : [];
+  const roles = rolesArr.join(',');
+  const geoLevel = String(user.geo_level || user.level || '').toLowerCase();
+  const divisionId = user.division_id || user.divisionId || '';
+  const divisionCode = user.division_code || user.divisionCode || '';
+  const districtLgd = user.district_lgd || user.districtLgd || '';
+  const blockLgd = user.block_lgd || user.blockLgd || '';
+  const hasGeoLock = Boolean(divisionId || divisionCode || districtLgd || blockLgd);
+  const statewideRole = rolesArr.some((r) =>
+    ['state_admin', 'system_admin', 'sysadmin', 'admin'].includes(
+      String(r).toLowerCase()
+    )
+  );
+  if (statewideRole && !hasGeoLock && (!geoLevel || geoLevel === 'state')) {
+    return hash(`statewide|${roles}`);
+  }
   return hash(
     [
       user.sub || user.id || '',
       user.username || '',
       roles,
-      user.geo_level || user.level || '',
-      user.division_id || user.divisionId || '',
-      user.division_code || user.divisionCode || '',
-      user.district_lgd || user.districtLgd || '',
-      user.block_lgd || user.blockLgd || '',
+      geoLevel,
+      divisionId,
+      divisionCode,
+      districtLgd,
+      blockLgd,
     ].join('|')
   );
 }
@@ -99,10 +117,31 @@ async function bumpCacheGeneration(reason = 'sync') {
   return { ok: true, generation: gen, reason };
 }
 
+/** Query keys that must not affect response identity (FE cache-busters, etc.). */
+const VOLATILE_QUERY_KEYS = new Set([
+  '_ts',
+  '_t',
+  'ts',
+  'timestamp',
+  '_',
+  'nonce',
+  'cache_bust',
+  'cacheBust',
+]);
+
+function stableQueryForCache(query) {
+  const cleaned = {};
+  for (const [k, v] of Object.entries(query || {})) {
+    if (VOLATILE_QUERY_KEYS.has(String(k))) continue;
+    cleaned[k] = v;
+  }
+  return stableStringify(cleaned);
+}
+
 function buildCacheKey(gen, req) {
   const userKey = scopeFingerprint(req.user);
   const path = String(req.baseUrl || '') + String(req.path || '');
-  const query = stableStringify(req.query || {});
+  const query = stableQueryForCache(req.query || {});
   const digest = hash(`${path}?${query}|${userKey}`);
   return `${KEY_PREFIX}:${gen}:${digest}`;
 }
@@ -158,7 +197,9 @@ async function setCachedResponse(key, body) {
   const ttl = ttlSeconds();
   const payload = JSON.stringify(body);
 
-  memorySet(key, body, ttl);
+  if (Buffer.byteLength(payload, 'utf8') <= MAX_MEMORY_VALUE_BYTES) {
+    memorySet(key, body, ttl);
+  }
 
   const redis = getRedis();
   if (isRedisReady() && redis) {

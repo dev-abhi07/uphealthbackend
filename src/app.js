@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const authRoutes = require('./routes/authRoutes');
@@ -18,11 +19,25 @@ const app = express();
 
 app.use(helmet());
 app.use(cors());
+// Shrink large ranking/table JSON (often 200KB–1.5MB raw) over the wire
+app.use(compression({ threshold: 1024 }));
 app.use(express.json({ limit: '2mb' }));
 app.use(morgan('dev'));
 
 app.get('/health', (req, res) => {
-  res.json({ success: true, status: 'ok', service: 'uphealthdashboard' });
+  let redisReady = false;
+  try {
+    redisReady = require('./cache/redisClient').isRedisReady();
+  } catch (_) {
+    /* ignore */
+  }
+  res.json({
+    success: true,
+    status: 'ok',
+    service: 'uphealthdashboard',
+    ranking_response_cache: true,
+    redis_ready: redisReady,
+  });
 });
 
 // Log authenticated API hits after response (does not change any response)
