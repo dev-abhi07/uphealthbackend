@@ -14,5 +14,10 @@ app.listen(config.port, () => {
     console.log(
       `Ranking response cache: on (Redis ${config.redis.host}:${config.redis.port}, TTL ${config.redis.ttlSeconds}s)`
     );
+    try {
+      require('./cache/warmRankingTableCache').scheduleWarmOnBoot();
+    } catch (err) {
+      console.warn('[cache-warm] boot schedule failed:', err.message);
+    }
   }
 });

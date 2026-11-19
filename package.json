@@ -9,6 +9,7 @@
     "redis": "powershell -ExecutionPolicy Bypass -File ./scripts/start-redis.ps1",
     "db:auth": "node src/db/seedAuthUsers.js",
     "db:schema": "node scripts/applyPendingSchema.js",
+    "cache:warm-table": "node -r dotenv/config scripts/warmRankingTableCache.js",
     "sheets:xlsx": "node -r dotenv/config scripts/generateSampleXlsx.js"
   },
   "engines": {

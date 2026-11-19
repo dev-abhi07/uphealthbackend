@@ -365,6 +365,12 @@ async function dashboard(req, res) {
           req.query.breakup_only === 'true' ||
           req.query.breakupOnly === '1') &&
         !(scope?.level === 'district' && tableLevel === 'block' && !block),
+      // Left geo table: rankings only (breakup loaded separately via breakup_only=1)
+      hierarchyOnly:
+        req.query.hierarchy_only === '1' ||
+        req.query.hierarchy_only === 'true' ||
+        req.query.hierarchyOnly === '1' ||
+        req.query.hierarchyOnly === 'true',
     });
 
     // Statewide Division/District table — same full-state list as state/sysadmin

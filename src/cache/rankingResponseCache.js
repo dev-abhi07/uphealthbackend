@@ -13,6 +13,9 @@ const MAX_MEMORY_ENTRIES = 80;
 /** Skip in-memory store for huge payloads (Redis still used when available). */
 const MAX_MEMORY_VALUE_BYTES = 1.5 * 1024 * 1024;
 
+/** Coalesce concurrent MISS builds for the same cache key. */
+const inflightByKey = new Map();
+
 function enabled() {
   return config.redis?.cacheEnabled !== false;
 }
@@ -74,6 +77,44 @@ function scopeFingerprint(user) {
   );
 }
 
+/**
+ * Statewide Division/District table payloads are identical for all logins —
+ * share one Redis key instead of fragmenting by user id.
+ */
+function isStatewideTableQuery(query = {}) {
+  const view = String(query.view || '').toLowerCase();
+  if (view !== 'table') return false;
+  const mode = String(
+    query.table_mode || query.level || query.geo_level || ''
+  ).toLowerCase();
+  if (mode !== 'division' && mode !== 'district') return false;
+  // Area-scoped breakup / block drill must stay user/geo specific
+  if (
+    query.district ||
+    query.district_name ||
+    query.district_id ||
+    query.district_lgd ||
+    query.dt_lgd ||
+    query.block ||
+    query.block_name ||
+    query.block_id ||
+    query.block_lgd ||
+    query.division ||
+    query.div_code ||
+    query.division_id
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function scopeFingerprintForRequest(req) {
+  if (isStatewideTableQuery(req?.query || {})) {
+    return hash('statewide|table');
+  }
+  return scopeFingerprint(req?.user);
+}
+
 async function getGeneration() {
   const redis = getRedis();
   if (isRedisReady() && redis) {
@@ -100,6 +141,7 @@ async function bumpCacheGeneration(reason = 'sync') {
   let gen = memoryGen + 1;
   memoryGen = gen;
   memory.clear();
+  inflightByKey.clear();
 
   const redis = getRedis();
   if (isRedisReady() && redis) {
@@ -114,6 +156,15 @@ async function bumpCacheGeneration(reason = 'sync') {
   }
 
   console.log(`[cache] ranking response cache reset (gen=${gen}, reason=${reason})`);
+
+  // Rebuild table left-panel keys in background (new indicators stay fast)
+  try {
+    const { scheduleWarmTableHierarchyCache } = require('./warmRankingTableCache');
+    scheduleWarmTableHierarchyCache({ reason: `after-${reason}`, generation: gen });
+  } catch (err) {
+    console.warn('[cache] warm schedule failed:', err.message);
+  }
+
   return { ok: true, generation: gen, reason };
 }
 
@@ -129,21 +180,58 @@ const VOLATILE_QUERY_KEYS = new Set([
   'cacheBust',
 ]);
 
+/**
+ * UI-only keys that do not change hierarchy rankings for hierarchy_only table loads.
+ * Keeping them out of the Redis key improves hit rate across minor FE default diffs.
+ */
+const HIERARCHY_ONLY_IGNORE_KEYS = new Set([
+  'panel_tab',
+  'breakup_tab',
+  'breakup_group',
+  'group_by',
+  'labels',
+  'analytics_compare',
+]);
+
 function stableQueryForCache(query) {
   const cleaned = {};
-  for (const [k, v] of Object.entries(query || {})) {
-    if (VOLATILE_QUERY_KEYS.has(String(k))) continue;
-    cleaned[k] = v;
+  const q = query || {};
+  const hierarchyOnly =
+    q.hierarchy_only === '1' ||
+    q.hierarchy_only === 'true' ||
+    q.hierarchyOnly === '1' ||
+    q.hierarchyOnly === 'true';
+
+  for (const [k, v] of Object.entries(q)) {
+    const key = String(k);
+    if (VOLATILE_QUERY_KEYS.has(key)) continue;
+    if (hierarchyOnly && HIERARCHY_ONLY_IGNORE_KEYS.has(key)) continue;
+    cleaned[key] = v;
   }
   return stableStringify(cleaned);
 }
 
 function buildCacheKey(gen, req) {
-  const userKey = scopeFingerprint(req.user);
+  const userKey = scopeFingerprintForRequest(req);
   const path = String(req.baseUrl || '') + String(req.path || '');
   const query = stableQueryForCache(req.query || {});
   const digest = hash(`${path}?${query}|${userKey}`);
   return `${KEY_PREFIX}:${gen}:${digest}`;
+}
+
+/**
+ * Build the same Redis key the middleware would use (for warm jobs).
+ * @param {{ path?: string, query?: object, user?: object }} parts
+ */
+async function buildCacheKeyFromParts(parts = {}) {
+  const gen = await getGeneration();
+  const fakeReq = {
+    baseUrl: parts.baseUrl || '/api/ranking',
+    path: parts.path || '/dashboard',
+    query: parts.query || {},
+    user: parts.user || null,
+  };
+  return buildCacheKey(gen, fakeReq);
 }
 
 function memorySet(key, value, ttlSec) {
@@ -213,7 +301,7 @@ async function setCachedResponse(key, body) {
 
 /**
  * Express middleware: cache successful JSON bodies for ranking GET routes.
- * Place after `authenticate`.
+ * Place after `authenticate`. Supports Redis HIT + singleflight on MISS.
  */
 function rankingResponseCacheMiddleware(req, res, next) {
   if (!enabled() || req.method !== 'GET') return next();
@@ -223,7 +311,7 @@ function rankingResponseCacheMiddleware(req, res, next) {
   let settled = false;
 
   getCachedResponse(req)
-    .then((hit) => {
+    .then(async (hit) => {
       if (settled) return;
       if (hit?.body) {
         settled = true;
@@ -232,17 +320,56 @@ function rankingResponseCacheMiddleware(req, res, next) {
       }
 
       const cacheKey = hit?.key;
+      if (!cacheKey) return next();
+
+      // Singleflight: wait for an in-progress MISS for the same key
+      const pending = inflightByKey.get(cacheKey);
+      if (pending) {
+        try {
+          const body = await pending;
+          if (settled) return;
+          if (body) {
+            settled = true;
+            res.setHeader('X-Cache', 'HIT-coalesce');
+            return res.json(body);
+          }
+        } catch (_) {
+          /* fall through and compute */
+        }
+      }
+
+      let resolveInflight = () => {};
+      const flight = new Promise((resolve) => {
+        resolveInflight = resolve;
+      });
+      inflightByKey.set(cacheKey, flight);
+
+      const finishFlight = (body) => {
+        resolveInflight(body || null);
+        if (inflightByKey.get(cacheKey) === flight) {
+          inflightByKey.delete(cacheKey);
+        }
+      };
+
       const originalJson = res.json.bind(res);
       res.json = (body) => {
         if (!settled && res.statusCode < 400) {
           settled = true;
           res.setHeader('X-Cache', 'MISS');
-          if (cacheKey) {
+          if (cacheKey && body && body.success !== false) {
             setCachedResponse(cacheKey, body).catch(() => {});
           }
+          finishFlight(body && body.success !== false ? body : null);
+        } else if (!settled) {
+          finishFlight(null);
         }
         return originalJson(body);
       };
+
+      res.on('close', () => {
+        if (!settled) finishFlight(null);
+      });
+
       return next();
     })
     .catch(() => {
@@ -257,4 +384,8 @@ module.exports = {
   setCachedResponse,
   rankingResponseCacheMiddleware,
   scopeFingerprint,
+  scopeFingerprintForRequest,
+  isStatewideTableQuery,
+  buildCacheKeyFromParts,
+  ttlSeconds,
 };

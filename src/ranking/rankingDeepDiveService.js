@@ -813,6 +813,7 @@ function shapeBreakupPanel({
  * @param {string} [opts.analyticsCompare] timeperiod|…
  * @param {string} [opts.analyticsMode] month|fy
  * @param {boolean|string|number} [opts.breakupOnly]
+ * @param {boolean|string|number} [opts.hierarchyOnly] left-table rankings only (skip breakup + nested blocks)
  */
 async function getDeepDiveDashboard({
   view = 'division',
@@ -833,6 +834,7 @@ async function getDeepDiveDashboard({
   analyticsFrom = null,
   analyticsTo = null,
   breakupOnly = false,
+  hierarchyOnly = false,
 } = {}) {
   const uiView = view === 'table' || String(view).toLowerCase() === 'table' ? 'table' : 'deep_dive';
   const rawGeo =
@@ -847,6 +849,12 @@ async function getDeepDiveDashboard({
     breakupOnly === 1 ||
     breakupOnly === '1' ||
     breakupOnly === 'true';
+  const onlyHierarchy =
+    !onlyBreakup &&
+    (hierarchyOnly === true ||
+      hierarchyOnly === 1 ||
+      hierarchyOnly === '1' ||
+      hierarchyOnly === 'true');
 
   // Resolve district LGD / id → name for filtering + breakup
   let resolvedDistrict = district || null;
@@ -1031,15 +1039,19 @@ async function getDeepDiveDashboard({
   const fyLabels = fyLabelsAll.filter((pl) => allOutcomeLabels.includes(pl));
   const cyLabelsAll = calendarYearPeriodLabels(periodRow.label);
   const cyLabels = cyLabelsAll.filter((pl) => allOutcomeLabels.includes(pl));
-  const allLabels = [
-    ...new Set([
-      ...trendLabels,
-      ...fyLabels,
-      ...cyLabels,
-      periodRow.label,
-      ...analyticsPeriodLabels,
-    ]),
-  ];
+  // Left-table hierarchy: only months needed for MONTHLY / FY / TREND columns.
+  // Full analytics history is expensive and unused by the left geo table.
+  const allLabels = onlyHierarchy
+    ? [...new Set([...trendLabels, ...fyLabels, ...cyLabels, periodRow.label])]
+    : [
+        ...new Set([
+          ...trendLabels,
+          ...fyLabels,
+          ...cyLabels,
+          periodRow.label,
+          ...analyticsPeriodLabels,
+        ]),
+      ];
 
   const rowsRaw = await loadValuesForPeriods({
     geoLevel,
@@ -1219,7 +1231,8 @@ async function getDeepDiveDashboard({
       };
     });
     const period_values = {};
-    for (const pl of analyticsPeriodLabels) {
+    const periodValueKeys = onlyHierarchy ? allLabels : analyticsPeriodLabels;
+    for (const pl of periodValueKeys) {
       const c = series.get(pl);
       period_values[pl] =
         c && c.value != null ? rawScore(c.value) : null;
@@ -1262,19 +1275,23 @@ async function getDeepDiveDashboard({
     return a.name.localeCompare(b.name);
   }
 
-  // Block series keyed by district → block name (for Division→District→Block expand)
+  // Block series keyed by district → block name (for Division→District→Block expand).
+  // hierarchy_only left-table: skip statewide block preload — FE expands via children API.
   const blockCapable = indicatorSupportsBlockLevel(ind);
   if (!blockCapable) {
     indicatorHasBlockValues = false;
   }
-  const blockRows = blockCapable
-    ? await loadValuesForPeriods({
-        geoLevel: 'block',
-        indicatorCode: ind.code,
-        periodLabels: allLabels,
-        isNegative: !!ind.is_negative,
-      })
-    : [];
+  const skipNestedBlocks =
+    onlyHierarchy && (geoLevel === 'division' || geoLevel === 'district');
+  const blockRows =
+    blockCapable && !skipNestedBlocks
+      ? await loadValuesForPeriods({
+          geoLevel: 'block',
+          indicatorCode: ind.code,
+          periodLabels: allLabels,
+          isNegative: !!ind.is_negative,
+        })
+      : [];
   /** @type {Map<string, Map<string, Map<string, {value:number|null, rank:number|null}>>>} */
   const blocksByDistrict = new Map();
   /** @type {Map<string, Map<string, {block_lgd:any, district_lgd:any}>>} */
@@ -1351,6 +1368,15 @@ async function getDeepDiveDashboard({
     }
 
     function buildDistrictRow(geoName) {
+      if (skipNestedBlocks) {
+        return buildFromSeries(geoName, distByGeo.get(geoName) || new Map(), {
+          geo_level: 'district',
+          children: [],
+          child_count: 0,
+          // FE loads blocks on expand when indicator supports block level
+          expandable: blockCapable,
+        });
+      }
       const blockChildren = buildBlockChildren(geoName);
       return buildFromSeries(geoName, distByGeo.get(geoName) || new Map(), {
         geo_level: 'district',
@@ -1391,8 +1417,17 @@ async function getDeepDiveDashboard({
         return (divRow.children || []).length > 0;
       });
   } else if (geoLevel === 'district') {
-    // By District tab: expand district → blocks
+    // By District tab: expand district → blocks (lazy when hierarchy_only)
     rankings = rankings.map((distRow) => {
+      if (skipNestedBlocks) {
+        return {
+          ...distRow,
+          geo_level: 'district',
+          children: [],
+          child_count: 0,
+          expandable: blockCapable,
+        };
+      }
       const blockChildren = buildBlockChildren(distRow.name);
       return {
         ...distRow,
@@ -1427,7 +1462,8 @@ async function getDeepDiveDashboard({
     return { period: pl, value: rawScore(avg(vals)), rank: null };
   });
   const statePeriodValues = {};
-  for (const pl of analyticsPeriodLabels) {
+  const statePeriodKeys = onlyHierarchy ? allLabels : analyticsPeriodLabels;
+  for (const pl of statePeriodKeys) {
     const vals = rankings
       .map((r) => (r.period_values ? r.period_values[pl] : null))
       .filter((x) => x != null);
@@ -1572,29 +1608,57 @@ async function getDeepDiveDashboard({
     })),
   ];
 
-  const breakup = await buildIndicatorBreakup({
-    periodRow,
-    fyLabels,
-    division,
-    district: resolvedDistrict,
-    block: resolvedBlockName,
-    divCode,
-    districtMaster,
-    filter: filterKey,
-  });
-  const breakupTitle = breakup.breakup_scope;
-  const indicator_breakup = breakup.indicator_breakup;
-  const indicators = mapBreakupToIndicators(indicator_breakup);
-  const { by_type, by_domain } = groupIndicatorsForSummary(indicators);
-  const shapedBreakup = shapeBreakupPanel({
-    indicator_breakup,
-    by_type,
-    by_domain,
-    breakupTabRaw: breakupTab,
-  });
+  let shapedBreakup = {
+    indicator_breakup: [],
+    by_type: [],
+    by_domain: [],
+  };
+  let indicators = [];
+  let summaryGroups = { by_type: [], by_domain: [] };
+  let breakupTitle = resolvedDistrict
+    ? String(resolvedDistrict).toUpperCase()
+    : 'UTTAR PRADESH';
+  let breakupMeta = {
+    breakup_geo_level: resolvedBlockName
+      ? 'block'
+      : resolvedDistrict
+        ? 'district'
+        : 'state',
+    up_avg_scope: 'state',
+    up_avg_label: 'UP Avg',
+    best_perf_label: 'Best Perf.',
+  };
 
-  // SUMMARY panel groups (panel_tab) — separate from table breakup_tab
-  const summaryGroups = { by_type, by_domain };
+  // Left-table hierarchy_only: FE loads indicator breakup via breakup_only=1 separately
+  if (!onlyHierarchy) {
+    const breakup = await buildIndicatorBreakup({
+      periodRow,
+      fyLabels,
+      division,
+      district: resolvedDistrict,
+      block: resolvedBlockName,
+      divCode,
+      districtMaster,
+      filter: filterKey,
+    });
+    breakupTitle = breakup.breakup_scope;
+    breakupMeta = {
+      breakup_geo_level: breakup.breakup_geo_level,
+      up_avg_scope: breakup.up_avg_scope || 'state',
+      up_avg_label: breakup.up_avg_label || 'UP Avg',
+      best_perf_label: breakup.best_perf_label || 'Best Perf.',
+    };
+    const indicator_breakup = breakup.indicator_breakup;
+    indicators = mapBreakupToIndicators(indicator_breakup);
+    const grouped = groupIndicatorsForSummary(indicators);
+    summaryGroups = { by_type: grouped.by_type, by_domain: grouped.by_domain };
+    shapedBreakup = shapeBreakupPanel({
+      indicator_breakup,
+      by_type: grouped.by_type,
+      by_domain: grouped.by_domain,
+      breakupTabRaw: breakupTab,
+    });
+  }
 
   const tabLabel =
     geoLevel === 'division'
@@ -1614,13 +1678,14 @@ async function getDeepDiveDashboard({
     period_display: periodRow.display,
     panel_tab: panel,
     labels: showLabels,
+    hierarchy_only: onlyHierarchy || undefined,
     filter: filterKey,
     filter_note,
     analytics: {
       compare,
       mode,
-      periods: analyticsPeriodLabels,
-      period_columns: analyticsPeriodLabels,
+      periods: onlyHierarchy ? allLabels : analyticsPeriodLabels,
+      period_columns: onlyHierarchy ? allLabels : analyticsPeriodLabels,
     },
     selected_indicator: {
       code: ind.code,
@@ -1650,11 +1715,12 @@ async function getDeepDiveDashboard({
           ? ['block']
           : ['district', 'block'],
     breakup_scope: breakupTitle,
-    breakup_geo_level: breakup.breakup_geo_level,
-    up_avg_scope: breakup.up_avg_scope || 'state',
-    up_avg_label: breakup.up_avg_label || 'UP Avg',
-    best_perf_label: breakup.best_perf_label || 'Best Perf.',
-    summary_scope: breakup.breakup_geo_level || (resolvedDistrict ? 'district' : 'state'),
+    breakup_geo_level: breakupMeta.breakup_geo_level,
+    up_avg_scope: breakupMeta.up_avg_scope,
+    up_avg_label: breakupMeta.up_avg_label,
+    best_perf_label: breakupMeta.best_perf_label,
+    summary_scope:
+      breakupMeta.breakup_geo_level || (resolvedDistrict ? 'district' : 'state'),
     district: resolvedDistrict || null,
     block: resolvedBlockName || null,
     ...shapedBreakup,
