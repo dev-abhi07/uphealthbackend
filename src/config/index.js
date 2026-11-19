@@ -17,11 +17,11 @@ module.exports = {
   /**
    * How many simultaneous logins the same userid may keep.
    * Oldest active sessions are revoked when a new login exceeds this.
-   * Override via MAX_CONCURRENT_SESSIONS (default 2).
+   * Override via MAX_CONCURRENT_SESSIONS (default 100).
    */
   maxConcurrentSessions: (() => {
-    const n = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 2);
-    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 2;
+    const n = Number(process.env.MAX_CONCURRENT_SESSIONS ?? 100);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 100;
   })(),
   outcome: {
     enabled: String(process.env.OUTCOME_API_ENABLED || 'true').toLowerCase() !== 'false',

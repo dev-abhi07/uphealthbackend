@@ -44,7 +44,7 @@ GET /api/auth/demo-accounts
 
 ### Concurrent sessions
 
-Same userid may keep **N** simultaneous logins (`MAX_CONCURRENT_SESSIONS` in `.env`, default **2**). A new login beyond N revokes the oldest active session (that client then gets 401). Re-login with the same `client_session_id` reuses that slot. JWT includes `sid`; middleware rejects revoked sessions.
+Same userid may keep **N** simultaneous logins (`MAX_CONCURRENT_SESSIONS` in `.env`, default **100**). A new login beyond N revokes the oldest active session (that client then gets 401). Re-login with the same `client_session_id` reuses that slot. JWT includes `sid`; middleware rejects revoked sessions.
 
 ---
 
